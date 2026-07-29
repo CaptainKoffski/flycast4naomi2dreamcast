@@ -62,6 +62,8 @@ using namespace i18n;
 #endif
 #include <mutex>
 #include <algorithm>
+#include <csignal>
+#include <cstdlib>
 
 bool game_started;
 
@@ -503,6 +505,44 @@ static void getScreenshot(std::vector<u8>& data, int width = 0)
 		return;
 	stbi_flip_vertically_on_write(0);
 	stbi_write_png_to_func(appendVectorData, &data, width, height, 3, &rawData[0], 0);
+}
+
+/* Task 18 instrumentation: headless framebuffer -> PNG dump. Reuses the same
+ * readback as the built-in screenshot (getScreenshot -> OpenGLRenderer::GetLastFrame,
+ * core/rend/gles/gldraw.cpp:814) so NO macOS screen-capture (TCC) permission is
+ * needed -- it reads the GL offscreen framebuffer directly. Called from
+ * mainui_rend_frame() on the render thread (live GL context). Enabled only when
+ * $FLYCAST_SHOT is set; overwrites that path. Triggers: every $FLYCAST_SHOT_EVERY
+ * frames (default 60) AND on SIGUSR1 (kill -USR1 <pid> for an on-demand grab). */
+static volatile std::sig_atomic_t shotForce = 0;
+static void shotSignal(int) { shotForce = 1; }
+
+void gui_dumpFramebuffer(u32 frame)
+{
+	static const char *path = nullptr;
+	static u32 every = 60;
+	static bool inited = false;
+	if (!inited) {
+		inited = true;
+		path = getenv("FLYCAST_SHOT");
+		const char *e = getenv("FLYCAST_SHOT_EVERY");
+		if (e != nullptr && atoi(e) > 0) every = (u32)atoi(e);
+		if (path != nullptr) std::signal(SIGUSR1, shotSignal);
+	}
+	if (path == nullptr)
+		return;
+	if (shotForce == 0 && (frame % every) != 0)
+		return;
+	shotForce = 0;
+	std::vector<u8> data;
+	getScreenshot(data);
+	if (data.empty())
+		return;
+	FILE *f = fopen(path, "wb");
+	if (f == nullptr)
+		return;
+	fwrite(data.data(), 1, data.size(), f);
+	fclose(f);
 }
 
 static void savestate()

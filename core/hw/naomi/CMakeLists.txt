@@ -1,4 +1,6 @@
 target_sources(${PROJECT_NAME} PRIVATE
+        cartlog.cpp
+        cartlog.h
         atomiswave.cpp
         atomiswave.h
         awave_regs.h

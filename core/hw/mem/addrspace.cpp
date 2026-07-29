@@ -4,6 +4,7 @@
 #include "hw/pvr/elan.h"
 #include "hw/sh4/dyna/blockmanager.h"
 #include "hw/sh4/sh4_mem.h"
+#include "hw/naomi/cartlog.h"   // Phase 4 (Task 13) DC-mode mirror-write instrumentation
 #include "oslib/oslib.h"
 #include "oslib/virtmem.h"
 #include <cassert>
@@ -101,10 +102,58 @@ void *writeConst(u32 addr, bool& ismem, u32 sz)
 	}
 }
 
+// Phase 4 (Task 13): log guest accesses to hardware-register ranges whose
+// emulator handlers can loop (holly system/DMA regs, AICA/G2, SH4 on-chip DMAC).
+// If the guest is stuck inside a single MMIO opcode (fetch-path PCSAMPLE frozen,
+// CPU burning), the LAST HWWR/HWRD line before the freeze is the access that
+// entered the looping handler -- i.e. the hang site. pc-2 = the access insn PC
+// (interpreter advances ctx->pc to insn+2 before ExecuteOpcode).
+static inline void cartlog_hwaccess(char rw, u32 addr, u32 val)
+{
+	const u32 pc = Sh4cntx.pc;
+	// Only the ported game's own code (post-handoff), matched by PHYSICAL pc so
+	// both the P1 (0x8c02xxxx) and P2/uncached (0xac02xxxx) aliases count -- the
+	// game dispatches through P2. This filters the loader/KOS boot flood
+	// (0x8c00xxxx-0x8c01xxxx) so the log stays bounded and game HW is visible.
+	const u32 ppc = pc & 0x1fffffff;
+	if (ppc < 0x0c020000 || ppc >= 0x0c200000)
+		return;
+	if ((addr & 0x1c000000) == 0x0c000000)   // skip main RAM (area 3, incl P1/P2 aliases)
+		return;
+	// Collapse consecutive identical accesses (a spin logs once, not millions).
+	static u32 lpc = 0, laddr = 0; static char lrw = 0;
+	if (pc == lpc && addr == laddr && rw == lrw)
+		return;
+	lpc = pc; laddr = addr; lrw = rw;
+	cartlog("HW%c pc=%08x addr=%08x val=%08x\n", rw, pc - 2, addr, val);
+}
+
+// Phase 4 (Task 14c): I/O-board decision hunt. The "I/O BD IS NOT CONNECTED"
+// status strings live at phys 0x0c0ca6dc..0x0c0ca740 (VA 0x8c0ca6dc, no static
+// xref -- computed resource base+offset). Catch the read of that block (the
+// screen-build / text-draw), log the reading PC, PR and a heuristic guest-stack
+// backtrace (code-looking return addrs) so the decision function that selected
+// the string can be traced. Dedup by reading PC so each site logs once.
+static inline void cartlog_strwatch(u32 addr)
+{
+	const u32 pa = addr & 0x1fffffff;
+	if (pa < 0x0c0ca6dc || pa >= 0x0c0ca740)
+		return;
+	const u32 pc = Sh4cntx.pc;
+	static u32 seen[256]; static int nseen = 0;
+	for (int i = 0; i < nseen; i++)
+		if (seen[i] == pa) return;          // dedup by ADDRESS: see every string byte touched
+	if (nseen < 256) seen[nseen++] = pa;
+	cartlog("STRWATCH pa=%08x pc=%08x pr=%08x\n", pa, pc - 2, Sh4cntx.pr);
+}
+
 template<typename T>
 T DYNACALL readt(u32 addr)
 {
 	constexpr u32 sz = sizeof(T);
+
+	cartlog_hwaccess('R', addr, 0);
+	cartlog_strwatch(addr);
 
 	u32 page = addr >> 24;	//1 op, shift/extract
 	uintptr_t iirf = (uintptr_t)memInfo_ptr[page]; //2 ops, insert + read [vmem table will be on reg ]
@@ -149,6 +198,27 @@ template<typename T>
 void DYNACALL writet(u32 addr, T data)
 {
 	constexpr u32 sz = sizeof(T);
+
+	// Phase 4 (Task 13) DC-mode instrumentation: log every guest store into the
+	// G1 register-mirror block (phys 0x0cfc8800-0x0cfc9000; the patched game +
+	// shim reach it via the P2 alias 0xacfc88xx). Captures the config-time
+	// cart-DMA program sequence (cart offset, GDSTAR dest, GDLEN len) and the
+	// trigger write of 1 to off 0x418. pc-2 = the store insn's PC: the
+	// interpreter advances ctx->pc to insn+2 in ReadNexOp before ExecuteOpcode.
+	// ponytail: interpreter-only in practice (dynarec's reg-indirect fast path
+	// bypasses writet, per the SHIMWATCH note in naomi.cpp); this pass forces the
+	// interpreter so every mirror store is seen. One range compare on the write
+	// path -- negligible under the interpreter.
+	{
+		u32 pa = addr & 0x1fffffff;
+		if (pa >= 0x0cfc8800 && pa < 0x0cfc9000)
+			cartlog("MIRRORWR pc=%08x off=%03x val=%08x\n",
+					Sh4cntx.pc - 2, pa - 0x0cfc8800, (u32)data);
+		if (pa == 0x0c0e842c || pa == 0x0c0e6298)
+			NOTICE_LOG(SH4, "CLEO-WATCH [%08x] = %08x pc=%08x pr=%08x",
+					pa, (u32)data, Sh4cntx.pc - 2, Sh4cntx.pr);
+	}
+	cartlog_hwaccess('W', addr, (u32)data);
 
 	u32 page = addr>>24;
 	uintptr_t iirf = (uintptr_t)memInfo_ptr[page];

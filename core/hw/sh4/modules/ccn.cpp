@@ -63,6 +63,8 @@ static void CCN_CCR_write(u32 addr, u32 value)
 {
 	CCN_CCR_type temp;
 	temp.reg_data = value & 0x89AF;
+	if ((value & 0x89AF & ~0x0808u) != (CCN_CCR.reg_data & ~0x0808u))
+		NOTICE_LOG(SH4, "CLEO-CCR write = %08x (was %08x) pc=%08x", value, CCN_CCR.reg_data, Sh4cntx.pc);
 
 	if (temp.ICI) {
 		DEBUG_LOG(SH4, "Sh4: i-cache invalidation %08X", Sh4cntx.pc);

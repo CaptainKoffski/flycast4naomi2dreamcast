@@ -47,6 +47,13 @@ else()
 	project(flycast)
 endif()
 
+# Local build fix (Cleopatra Phase 2, not upstream): SDL2's subproject compiles
+# .m files but never enable_language(OBJC); force it so CMAKE_OBJC_COMPILE_OBJECT
+# is populated under command-line-tools + cmake 3.31.
+if(APPLE AND NOT LIBRETRO)
+	enable_language(OBJC)
+endif()
+
 option(FLYCAST_PRESEED_DARWIN_XCODE_CHECKS "Pre-seed stable macOS feature checks for faster Xcode generation" ON)
 if(FLYCAST_PRESEED_DARWIN_XCODE_CHECKS)
 	include(DarwinXcodeProbeCache)
@@ -1416,9 +1423,14 @@ if(NOT LIBRETRO)
 				${IOSURFACE_LIBRARY}
 				${MULTITOUCH_SUPPORT_LIBRARY})
 
-			add_custom_command(TARGET ${PROJECT_NAME} POST_BUILD
-				COMMAND ${CMAKE_COMMAND} -E copy "$ENV{VULKAN_SDK}/lib/libMoltenVK.dylib"
-				$<TARGET_FILE_DIR:flycast>/../Frameworks/libvulkan.dylib)
+			# Local build fix (Cleopatra Phase 2, not upstream): only bundle
+			# MoltenVK when Vulkan is enabled and a Vulkan SDK is present. The
+			# headless instrumentation build uses OpenGL, so skip it otherwise.
+			if(USE_VULKAN AND EXISTS "$ENV{VULKAN_SDK}/lib/libMoltenVK.dylib")
+				add_custom_command(TARGET ${PROJECT_NAME} POST_BUILD
+					COMMAND ${CMAKE_COMMAND} -E copy "$ENV{VULKAN_SDK}/lib/libMoltenVK.dylib"
+					$<TARGET_FILE_DIR:flycast>/../Frameworks/libvulkan.dylib)
+			endif()
 		endif()
 	elseif(UNIX)
 		if(NOT BUILD_TESTING)

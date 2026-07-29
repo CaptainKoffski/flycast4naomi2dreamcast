@@ -35,6 +35,13 @@
 #include "midiffb.h"
 #include "atomiswave.h"
 #include "oslib/i18n.h"
+#include "cartlog.h"
+#include "hw/sh4/sh4_if.h"   // Phase 3: Sh4cntx (guest pc/sp)
+// Phase 2 instrumentation: RAM buffers for watermark scans.
+// mem_b/RAM_SIZE = main system RAM (sh4_mem.h, already included); vram/VRAM_SIZE
+// (pvr_mem.h); aica::aica_ram/ARAM_SIZE (aica_if.h). Sizes are macros in types.h.
+#include "hw/pvr/pvr_mem.h"
+#include "hw/aica/aica_if.h"
 
 #include <memory>
 #include <algorithm>
@@ -106,6 +113,8 @@ void WriteMem_naomi(u32 address, u32 data, u32 size)
 		INFO_LOG(NAOMI, "called without cartridge");
 		return;
 	}
+	if (address >= NAOMI_COMM_CTRL_addr && address <= NAOMI_COMM_STATUS2_addr)
+		cartlog("SERIALPOKE addr=%08x data=%08x\n", address, data);
 	if (!settings.naomi.slave && m3comm != nullptr && address >= NAOMI_COMM_CTRL_addr && address <= NAOMI_COMM_STATUS2_addr) {
 		m3comm->WriteMem(address, data, size);
 		return;
@@ -148,6 +157,55 @@ static int naomiDmaSched(int tag, int sch_cycl, int jitter, void *arg)
 	}
 }
 
+// Phase 2 instrumentation: highest non-zero byte in a buffer (backwards scan,
+// stops at the water line). ponytail: over-reports if stale non-zero data sits
+// high in the region — a conservative upper bound, fine for the cut decision.
+static u32 cartlog_high(const u8 *buf, u32 size)
+{
+	for (u32 i = size; i-- > 0; )
+		if (buf[i] != 0)
+			return i + 1;
+	return 0;
+}
+
+static void cartlog_watermarks()
+{
+	cartlog("WATERMARK region=main used=%x size=%x\n", cartlog_high(&mem_b[0], RAM_SIZE), RAM_SIZE);
+	cartlog("WATERMARK region=vram used=%x size=%x\n", cartlog_high(&vram[0], VRAM_SIZE), VRAM_SIZE);
+	cartlog("WATERMARK region=aram used=%x size=%x\n", cartlog_high(&aica::aica_ram[0], ARAM_SIZE), ARAM_SIZE);
+}
+
+// Phase 4 (Task 4, V2) instrumentation: any-write detector for the planned shim
+// home, phys 0x0cfc0000-0x0cffffff (== mem_b offset 0x00fc0000-0x00ffffff).
+// ponytail: this is a content scan, not a live write-intercept -- the arm64
+// dynarec's fast memory path (core/rec-ARM64/rec_arm64.cpp GenWriteMemoryFast /
+// GenWriteMemoryImmediate) stores directly into the host-mapped RAM array
+// whenever addrspace::virtmemEnabled(), bypassing every C-level write function
+// for register-indirect stores (the common case for game code) -- so a hook on
+// WriteMem/addrspace::write* would silently miss most writes with dynarec on.
+// Scanning actual RAM content (same trick as cartlog_watermarks/cartlog_high
+// above) sees the result of a write regardless of which path produced it
+// (interpreter, dynarec fast/slow path, or cart DMA memcpy). Sampled at the
+// same cadence as the watermark scan; like that scan, a write immediately
+// zeroed again before the next sample would be missed -- an accepted,
+// pre-existing trade-off in this instrumentation, not a new one.
+static void cartlog_shimwatch()
+{
+	static bool tripped = false;
+	if (tripped)
+		return;
+	const u32 SHIM_LO = 0x00fc0000, SHIM_HI = 0x00ffffff;	// mem_b offset; phys 0x0cfc0000-0x0cffffff
+	for (u32 i = SHIM_LO; i <= SHIM_HI; i++)
+	{
+		if (mem_b[i] != 0)
+		{
+			cartlog("SHIMWATCH addr=%08x\n", 0x0c000000 + i);
+			tripped = true;
+			break;
+		}
+	}
+}
+
 //Dma Start
 static void Naomi_DmaStart(u32 addr, u32 data)
 {
@@ -165,6 +223,15 @@ static void Naomi_DmaStart(u32 addr, u32 data)
 	else if ((m3comm == nullptr || !m3comm->DmaStart(addr, data)) && CurrentCartridge != nullptr)
 	{
 		DEBUG_LOG(NAOMI, "NAOMI-DMA start addr %08X len %x", SB_GDSTAR, SB_GDLEN);
+		cartlog("CARTDMA src=%08x dest=%08x len=%x\n",
+				CurrentCartridge->GetDmaSrcOffset(), SB_GDSTAR & 0x1FFFFFE0, SB_GDLEN);
+		cartlog("CARTDMAPC pc=%08x sp=%08x\n", Sh4cntx.pc, Sh4cntx.r[15]);   // Phase 3: guest PC/SP at DMA kick
+		static u32 cartlog_dma_count = 0;
+		if ((cartlog_dma_count++ & 63) == 0)   // ponytail: every 64th DMA; the scan is cheap but not free
+		{
+			cartlog_watermarks();
+			cartlog_shimwatch();   // Phase 4 (Task 4, V2): shim-home content scan, same cadence
+		}
 		verify(1 == SB_GDDIR);
 		SB_GDST = 1;
 		SB_GDSTARD = SB_GDSTAR & 0x1FFFFFE0;

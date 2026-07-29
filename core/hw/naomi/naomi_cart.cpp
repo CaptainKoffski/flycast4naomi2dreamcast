@@ -20,6 +20,7 @@
 // copyright-holders:MetalliC
 
 #include <memory>
+#include "cartlog.h"
 #include "naomi_cart.h"
 #include "naomi_regs.h"
 #include "naomi.h"
@@ -1015,6 +1016,7 @@ void NaomiCartridge::WriteMem(u32 address, u32 data, u32 size)
 	case NAOMI_ROM_OFFSETL_addr:
 		RomPioOffset &= 0xffff0000;
 		RomPioOffset |= data;
+		cartlog("CARTPIO offset=%08x\n", RomPioOffset & 0x1fffffff);
 		PioOffsetChanged(RomPioOffset);
 		return;
 

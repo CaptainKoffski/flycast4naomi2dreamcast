@@ -60,6 +60,7 @@ bool mainui_rend_frame()
 		try {
 			if (!emu.render())
 				return false;
+			gui_dumpFramebuffer(MainFrameCount);   /* Task 18: headless FB->PNG ($FLYCAST_SHOT) */
 			if (config::ProfilerEnabled && config::ProfilerDrawToGUI)
 				gui_display_profiler();
 		} catch (const RendererException& e) {

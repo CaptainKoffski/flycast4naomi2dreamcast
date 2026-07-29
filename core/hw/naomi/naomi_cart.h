@@ -64,6 +64,8 @@ public:
 	virtual bool Write(u32 offset, u32 size, u32 data);
 	virtual void* GetPtr(u32 offset, u32& size);
 	virtual void* GetDmaPtr(u32 &size) = 0;
+	// Phase 2 instrumentation: current cart byte offset for a DMA read (0 if N/A)
+	virtual u32 GetDmaSrcOffset() const { return 0; }
 	virtual void AdvancePtr(u32 size) = 0;
 	virtual void Serialize(Serializer& ser) const {}
 	virtual void Deserialize(Deserializer& deser) {}
@@ -87,6 +89,7 @@ public:
 	u32 ReadMem(u32 address, u32 size) override;
 	void WriteMem(u32 address, u32 data, u32 size) override;
 	void* GetDmaPtr(u32 &size) override;
+	u32 GetDmaSrcOffset() const override { return DmaOffset & 0x1fffffff; }
 	void AdvancePtr(u32 size) override {
 		DmaOffset += size;
 	}

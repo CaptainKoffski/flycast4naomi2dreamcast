@@ -2,6 +2,8 @@
 	All non fpu opcodes
 */
 #include "types.h"
+#include "hw/naomi/cartlog.h"   // Phase 4 (Task 13) SLEEP-wait instrumentation
+#include <ctime>                // Phase 4 (Task 13): wall-clock rate limit for SLEEPWAIT
 
 #include "hw/sh4/sh4_mem.h"
 #include "hw/sh4/sh4_mmr.h"
@@ -959,6 +961,24 @@ sh4op(i0100_nnnn_0000_1011)
 //sleep
 sh4op(i0000_0000_0001_1011)
 {
+	// Phase 4 (Task 13): the guest spends real seconds inside each SLEEP opcode
+	// (its internal loop calls UpdateSystem_INTC up to 1001x, advancing the
+	// scheduler / emulated time, which the emulator paces to real-time). So a
+	// SLEEP boot-hang idle starves every fetch-count- and outer-loop-based
+	// detector. Log the SLEEP site directly on EVERY execution (interrupt-broken
+	// or not), wall-clock rate-limited (~1/sec). pc-2 = the sleep instruction;
+	// pr = the return address of whoever called the wait routine (its caller).
+	{
+		static time_t last = 0;
+		time_t now = time(nullptr);
+		if (now != last)
+		{
+			last = now;
+			cartlog("SLEEPWAIT pc=%08x pr=%08x gdst_mirror=%08x\n",
+					ctx->pc - 2, ctx->pr, ReadMem32_nommu(0x8cfc8c18));
+		}
+	}
+
 	//just wait for an Interrupt
 	int i = 0, s = 1;
 

@@ -153,7 +153,8 @@ void writeAicaReg(u32 addr, T data)
 		{
 		case 0x2C00:
 			ARMRST = data;
-			INFO_LOG(AICA_ARM, "ARMRST = %02X", ARMRST);
+			NOTICE_LOG(AICA_ARM, "CLEO-ARMRST = %02X ram0=%08x ram4=%08x", ARMRST,
+					*(u32 *)&aica_ram[0], *(u32 *)&aica_ram[4]);
 			ArmSetRST();
 			return;
 		case 0x2C01:
@@ -168,7 +169,8 @@ void writeAicaReg(u32 addr, T data)
 	{
 		VREG = (data >> 8) & 0xFF;
 		ARMRST = data & 0xFF;
-		INFO_LOG(AICA_ARM, "VREG = %02X ARMRST %02X", VREG, ARMRST);
+		NOTICE_LOG(AICA_ARM, "CLEO-ARMRST(w) VREG=%02X ARMRST=%02X ram0=%08x ram4=%08x", VREG, ARMRST,
+				*(u32 *)&aica_ram[0], *(u32 *)&aica_ram[4]);
 		ArmSetRST();
 		return;
 	}

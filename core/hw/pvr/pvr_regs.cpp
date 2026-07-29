@@ -1,5 +1,6 @@
 #include "pvr_regs.h"
 #include "pvr_mem.h"
+#include "hw/sh4/sh4_if.h"
 #include "Renderer_if.h"
 #include "ta.h"
 #include "spg.h"
@@ -156,6 +157,7 @@ void pvr_WriteReg(u32 paddr,u32 data)
 	case SPG_LOAD_addr:
 		if (PvrReg(addr, u32) != data)
 		{
+			NOTICE_LOG(PVR, "CLEO-SPG write %s = %08x (was %08x) pc=%08x pr=%08x", regName(paddr), data, PvrReg(addr, u32), p_sh4rcb->cntx.pc, p_sh4rcb->cntx.pr);
 			PvrReg(addr, u32) = data;
 			CalculateSync();
 		}
@@ -164,6 +166,8 @@ void pvr_WriteReg(u32 paddr,u32 data)
 	case FB_R_CTRL_addr:
 		{
 			bool vclk_div_changed = (PvrReg(addr, u32) ^ data) & (1 << 23);
+			if (PvrReg(addr, u32) != data)
+				NOTICE_LOG(PVR, "CLEO-SPG write FB_R_CTRL = %08x (was %08x, vclk_div=%d)", data, PvrReg(addr, u32), (int)((data >> 23) & 1));
 			PvrReg(addr, u32) = data;
 			if (vclk_div_changed)
 				CalculateSync();
@@ -214,6 +218,16 @@ void pvr_WriteReg(u32 paddr,u32 data)
 
 	case PAL_RAM_CTRL_addr:
 		pal_needs_update = pal_needs_update || ((data ^ PAL_RAM_CTRL) & 3) != 0;
+		break;
+
+	case VO_CONTROL_addr:
+	case SPG_HBLANK_addr:
+	case SPG_VBLANK_addr:
+	case SPG_WIDTH_addr:
+	case VO_STARTX_addr:
+	case VO_STARTY_addr:
+		if (PvrReg(addr, u32) != data)
+			NOTICE_LOG(PVR, "CLEO-SPG write %s = %08x (was %08x) pc=%08x pr=%08x", regName(paddr), data, PvrReg(addr, u32), p_sh4rcb->cntx.pc, p_sh4rcb->cntx.pr);
 		break;
 
 	default:

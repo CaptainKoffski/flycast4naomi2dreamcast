@@ -19,6 +19,8 @@
 #include "maple_devs.h"
 #include "maple_if.h"
 #include "hw/naomi/naomi_cart.h"
+#include "hw/naomi/cartlog.h"   // Phase 2/3 instrumentation
+#include "hw/sh4/sh4_if.h"      // Phase 3: Sh4cntx
 #include <xxhash.h>
 #include "oslib/oslib.h"
 #include "oslib/i18n.h"
@@ -1312,6 +1314,11 @@ u32 BaseMIE::RawDma(const u32 *buffer_in, u32 buffer_in_len, u32 *buffer_out)
 		const u32 reci = (buffer_in[0] >> 8) & 0xFF;
 		const u32 sender = (buffer_in[0] >> 16) & 0xFF;
 		buffer_out[0] = (resp << 0 ) | (sender << 8) | (reci << 16) | ((out_len / 4) << 24);
+		if (cmd != 0x86) {
+			char hex[168]; u32 n = out_len + 4; if (n > 80) n = 80;
+			for (u32 k = 0; k < n; k++) snprintf(hex + k*2, 3, "%02x", ((u8*)buffer_out)[k]);
+			NOTICE_LOG(MAPLE, "CLEO-MIE cmd=%02x hdr_in=%08x replylen=%d reply=%s", cmd, buffer_in[0], out_len + 4, hex);
+		}
 		return out_len + 4;
 	}
 	else {
@@ -1407,6 +1414,11 @@ u32 BaseMIE::RawDma(const u32 *buffer_in, u32 buffer_in_len, u32 *buffer_out)
 	printf("\n");
 #endif
 
+	if (cmd != 0x86) {
+		char hex[168]; u32 n = out_len; if (n > 80) n = 80;
+		for (u32 k = 0; k < n; k++) snprintf(hex + k*2, 3, "%02x", ((u8*)buffer_out)[k]);
+		NOTICE_LOG(MAPLE, "CLEO-MIE cmd=%02x hdr_in=%08x replylen=%d reply=%s", cmd, buffer_in[0], out_len, hex);
+	}
 	return out_len;
 }
 
@@ -1750,6 +1762,7 @@ void MIEImpl::handle_86_subcommand()
 		return;
 	}
 	u32 subcode = dma_buffer_in[0];
+	cartlog("MAPLEPC cmd=86 sub=%02x pc=%08x\n", subcode, Sh4cntx.pc);   // Phase 3: input(0x15)/EEPROM(0x01/03/0B) call site
 
 	// CT fw uses 13 as a 17, and 17 as 13 and also uses 19
 	if (crazy_mode)
@@ -2225,6 +2238,7 @@ u32 jvs_io_board::handle_jvs_message(const u8 *buffer_in, u32 length_in, u8 *buf
 
 						u32 inputs[4];
 						read_digital_in(buttons, inputs);
+						cartlog("JVSREPORT buttons=%04x\n", inputs[0] & 0xffff);   // P1 JVS digital word
 						JVS_OUT((inputs[0] & NAOMI_TEST_KEY) ? 0x80 : 0x00); // test, tilt1, tilt2, tilt3, unused, unused, unused, unused
 						LOGJVS("btns ");
 						for (int player = 0; player < buffer_in[cmdi + 1]; player++)

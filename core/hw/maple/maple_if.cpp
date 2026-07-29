@@ -7,8 +7,10 @@
 #include "hw/sh4/sh4_sched.h"
 #include "network/ggpo.h"
 #include "hw/naomi/card_reader.h"
+#include "hw/naomi/cartlog.h"   // Phase 4 (Task 4, V4) instrumentation
 
 #include <memory>
+#include <cstring>
 
 enum MaplePattern
 {
@@ -168,8 +170,25 @@ static void maple_DoDma()
 	u32 xferOut = 0;
 	u32 xferIn = 0;
 	bool last = false;
+	// Phase 4 (Task 13): DC-mode boot-hang capture. maple_DoDma runs SYNCHRONOUSLY
+	// from the guest's SB_MDST=1 store and walks a command list from SB_MDSTAR with
+	// an unbounded `while(!last)` loop (last = command header bit31). A list whose
+	// terminator is never reached makes this loop walk RAM/MMIO forever, freezing
+	// the guest inside that single store opcode -- exactly the observed hang
+	// (fetch-path PCSAMPLE frozen, CPU burning). Log entry + guard the loop.
+	cartlog("MDODMA enter mdstar=%08x hdr0=%08x mden=%d pc=%08x\n",
+			SB_MDSTAR, ReadMem32_nommu(SB_MDSTAR), SB_MDEN & 1, Sh4cntx.pc);
+	u32 mdodma_iters = 0;
 	while (!last)
 	{
+		if (++mdodma_iters > 100000)
+		{
+			cartlog("MDODMA_RUNAWAY iters=%u addr=%08x hdr1=%08x\n",
+					mdodma_iters, addr, ReadMem32_nommu(addr));
+			SB_MDST = 0;          // escape: clear busy so the guest's poll exits; see where it goes next
+			mapleDmaOut.clear();
+			return;
+		}
 		u32 header_1 = ReadMem32_nommu(addr);
 		u32 header_2 = ReadMem32_nommu(addr + 4) & 0x1FFFFFE0;
 
@@ -237,7 +256,17 @@ static void maple_DoDma()
 					p_data = maple_in_buf;
 				}
 				u32 outbuf[1024 / sizeof(u32)];
+				// Phase 4 (Task 4, V4): zero first so the fixed 0x40-byte MIERESP dump
+				// below never exposes uninitialized stack bytes past outlen.
+				memset(outbuf, 0, sizeof(outbuf));
+				// Phase 4 (Task 13): bracket RawDma + the reply-vector build to pin a
+				// hang inside a single Maple frame (RawDma handler or a bogus huge
+				// outlen -> gigabyte std::vector). "call" with no "ret" => RawDma hung;
+				// "ret" with a huge outlen => the emplace_back below is the hang.
+				cartlog("MDODMA rawdma_call cmd=%02x reci=%02x bus=%d plen=%u\n",
+						frame_header & 0xFF, (frame_header >> 8) & 0xFF, bus, plen);
 				u32 outlen = pDevice->RawDma(&p_data[0], plen * sizeof(u32), outbuf);
+				cartlog("MDODMA rawdma_ret outlen=%x\n", outlen);
 				xferIn += plen * sizeof(u32) + 3; // start, parity and stop bytes
 				xferOut += outlen + 3;
 #ifdef STRICT_MODE
@@ -252,7 +281,22 @@ static void maple_DoDma()
 				if (swap_msb)
 					for (u32 i = 0; i < outlen / 4; i++)
 						outbuf[i] = SWAP32(outbuf[i]);
+				// Phase 4 (Task 4, V4) instrumentation: dump the MIE's actual reply
+				// bytes + destination (recv) address for JVS I/O transactions (cmd
+				// 0x86), read AFTER RawDma has produced the response (and after the
+				// swap_msb fixup above) so this is byte-identical to what gets
+				// written to guest RAM at header_2 below -- response, not request.
+				if (command == MDC_JVSCommand && outlen > 0)
+				{
+					u8 sub = ((const u8 *)p_data)[4];
+					cartlog("MIERESP sub=%02x addr=%08x data=", sub, header_2);
+					const u8 *resp = (const u8 *)outbuf;
+					for (int i = 0; i < 0x40; i++)
+						cartlog("%02x", resp[i]);
+					cartlog("\n");
+				}
 				mapleDmaOut.emplace_back(header_2, std::vector<u32>(outbuf, outbuf + outlen / 4));
+				cartlog("MDODMA frame_done outlen=%x\n", outlen);   // Phase 4 (Task 13)
 			}
 			else
 			{

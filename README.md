@@ -1,4 +1,13 @@
-# Flycast
+# Flycast — instrumented for a Naomi → Dreamcast port
+
+> [!NOTE]
+> **This is not upstream Flycast.** This fork adds the instrumentation used to
+> port the Naomi game *Cleopatra Fortune Plus* to the Sega Dreamcast by static
+> binary conversion: cart-DMA/RAM/input/EEPROM tracing, guest-PC attribution,
+> boot-hang detectors, MIE reply capture, and headless framebuffer screenshots.
+> **See [INSTRUMENTATION.md](INSTRUMENTATION.md)** for what every probe does,
+> the full annotated diff (`git diff 4126f1464..HEAD`), and build notes.
+> For playing games, use [upstream Flycast](https://github.com/flyinghead/flycast).
 
 [![Android CI](https://github.com/flyinghead/flycast/actions/workflows/android.yml/badge.svg)](https://github.com/flyinghead/flycast/actions/workflows/android.yml)
 [![C/C++ CI](https://github.com/flyinghead/flycast/actions/workflows/c-cpp.yml/badge.svg)](https://github.com/flyinghead/flycast/actions/workflows/c-cpp.yml)

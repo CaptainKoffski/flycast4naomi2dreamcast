@@ -18,12 +18,26 @@ static void write_BSC_PDTRA_arcade(u32 addr, u16 data)
 
 static void write_BSC_PDTRA(u32 addr, u16 data)
 {
+	if (data != BSC_PDTRA.full)
+		NOTICE_LOG(SH4, "CLEO-GPIO PDTRA = %04x (was %04x) pc=%08x", data, BSC_PDTRA.full, p_sh4rcb->cntx.pc);
 	BSC_PDTRA.full = data;
 }
 
 static u16 read_BSC_PDTRA_arcade(u32 addr)
 {
 	return NaomiBoardIDRead();
+}
+
+static u32 read_BSC_PCTRA(u32 addr)
+{
+	return BSC_PCTRA.full;
+}
+
+static void write_BSC_PCTRA(u32 addr, u32 data)
+{
+	if (data != BSC_PCTRA.full)
+		NOTICE_LOG(SH4, "CLEO-GPIO PCTRA = %08x (was %08x) pc=%08x", data, BSC_PCTRA.full, p_sh4rcb->cntx.pc);
+	BSC_PCTRA.full = data;
 }
 
 static u16 read_BSC_PDTRA(u32 addr)
@@ -91,7 +105,7 @@ void BSCRegisters::init()
 
 	//BSC PCTRA 0xFF80002C 0x1F80002C 32 0x00000000 Held Held Held Bclk
 	// Naomi BIOS writes u16 in this register but ignoring them doesn't seem to hurt
-	setRW<BSC_PCTRA_addr, u32>();
+	setHandlers<BSC_PCTRA_addr>(read_BSC_PCTRA, write_BSC_PCTRA);
 
 	//BSC PDTRA 0xFF800030 0x1F800030 16 Undefined Held Held Held Bclk
 	setRW<BSC_PDTRA_addr, u16>();

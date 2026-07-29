@@ -54,6 +54,7 @@ void gui_cycleSaveStateSlot(int step);
 void gui_togglePause();
 std::string gui_getCurGameBoxartUrl();
 void gui_takeScreenshot();
+void gui_dumpFramebuffer(u32 frame);   /* Task 18: headless FB->PNG dump ($FLYCAST_SHOT) */
 void gui_runOnUiThread(std::function<void()> function);
 
 enum class GuiState {
