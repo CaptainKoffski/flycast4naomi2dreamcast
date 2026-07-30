@@ -1,210 +1,532 @@
-# Flycast instrumentation for a Naomi → Dreamcast static conversion
+# Using an emulator as a lab bench: Flycast instrumentation for a Naomi → Dreamcast port
 
-This fork of [Flycast](https://github.com/flyinghead/flycast) carries the
-instrumentation that was used to port the Sega Naomi game **Cleopatra Fortune
-Plus** to the Sega Dreamcast by *static binary conversion* — no source code,
-in the tradition of the community Atomiswave→Dreamcast ports. The emulator was
-used as a **measurement instrument**: first to map what the Naomi game actually
-uses (cart data, RAM, inputs, EEPROM, video timing), then to debug the
-converted Dreamcast build (boot hangs, I/O-board checks, the port's runtime
-shim) without any hardware debugger.
+This fork of [Flycast](https://github.com/flyinghead/flycast) is not a better
+emulator. It is a **measurement instrument** — the one that was used to port
+the Sega Naomi arcade game **Cleopatra Fortune Plus** to the Sega Dreamcast by
+*static binary conversion*: no source code, no devkit, just the original cart
+dump, a disassembler, and this instrumented emulator. The same approach the
+community used for the Atomiswave→Dreamcast ports.
 
-None of this is meant for upstream. It is shared so that anyone attempting a
-similar Naomi/Atomiswave→DC conversion can reuse the probes — most of the
-techniques are generic even where the constants are game-specific.
+You don't need to know anything about that project to use this fork. This
+document explains, from scratch, what each probe measures, why it exists, and
+what it actually found — because most of the *techniques* here (streaming
+maps, guest-PC attribution, hang taxonomies, data watchpoints on strings,
+byte-exact I/O capture) transfer directly to any similar conversion or to
+emulator-assisted reverse engineering in general.
 
-- **Base:** upstream `master` at `4126f1464` (developed and battle-tested at
-  `f09d1f22`, which differs from this base only by a NetBSD CI change).
-- **Full diff:** `git diff 4126f1464..HEAD` — every hunk is commented in place
-  with a `Phase N (Task M)` marker explaining why it exists.
+- **Base:** upstream `master` at `4126f1464`. The full change is
+  `git diff 4126f1464..HEAD` — every hunk carries an in-place comment.
 - **License:** GPL-2.0, same as upstream (see `LICENSE`).
+- Nothing here is upstreamable and none of it is meant to be.
 
-## The "Phase / Task" vocabulary in the code comments
+---
 
-The in-code comments reference the port project's internal plan:
+## 1. The problem: same silicon, different machine
 
-| Marker | Meaning |
-|---|---|
-| **Phase 2** | Instrumented analysis of the *original Naomi game* running under Flycast's Naomi emulation: cart-streaming map, RAM watermarks, input map, serial usage. |
-| **Phase 3** | Reverse engineering: attributing hardware events to *guest code addresses* (interpreter-mode capture feeding Ghidra static analysis). |
-| **Phase 4** | Conversion debugging: the game rebuilt as a Dreamcast GDI (loader + freestanding shim + patch table), now running under Flycast's *Dreamcast* emulation. |
-| Task 4 | Shim development: input/EEPROM interception, MIE reply capture. |
-| Task 13 | DC-mode boot-hang dissection. |
-| Task 14c | Hunting the game's "I/O BD IS NOT CONNECTED" error-screen decision. |
-| Task 18 | Headless framebuffer screenshots for unattended verification. |
+The Naomi is almost a Dreamcast. Same Hitachi SH4 CPU, same PowerVR CLX2 GPU,
+same AICA sound chip. That's what makes a static conversion thinkable at all:
+the game's machine code runs unmodified on the target CPU. Everything that
+breaks lives in the differences:
 
-## Architecture: two log channels
-
-1. **`cartlog(...)`** — new tiny logger (`core/hw/naomi/cartlog.{cpp,h}`).
-   Appends printf-style lines to the file named by the **`FLYCAST_CARTLOG`**
-   environment variable (default: `flycast-cartlog.txt` in the working
-   directory), flushed per line so a hung/killed emulator loses nothing.
-   All high-volume structured probes write here, one greppable tag per line.
-   Note: it is **not** gated by a flag — this build always produces the file.
-2. **`NOTICE_LOG(... "CLEO-..." ...)`** — low-volume probes injected into
-   Flycast's normal logging, tagged `CLEO-` so they can be grepped out of the
-   standard log/console.
-
-## Probe reference
-
-### Phase 2 — what does the game actually use?
-
-Run the original Naomi ROM under this build and the log answers: what must the
-Dreamcast port provide?
-
-| Tag | Where | Line format | Question it answers |
-|---|---|---|---|
-| `CARTDMA` | `core/hw/naomi/naomi.cpp` `Naomi_DmaStart()` | `CARTDMA src=%08x dest=%08x len=%x` | Every cart→RAM DMA: cart byte offset, physical RAM destination, length. Builds the **cart-streaming map** — which regions of the (much larger) cart ROM the game ever reads, so they can be repacked onto a GD-ROM and reissued as disc reads. `src` comes from a new virtual `NaomiCartridge::GetDmaSrcOffset()` (`naomi_cart.h`; returns 0 for cart types that don't track it). |
-| `CARTPIO` | `core/hw/naomi/naomi_cart.cpp` `WriteMem` (ROM_OFFSETL) | `CARTPIO offset=%08x` | Cart reads that go through the PIO port instead of DMA (they'd be invisible to the DMA map). |
-| `WATERMARK` | `naomi.cpp`, sampled every 64th cart DMA | `WATERMARK region=main\|vram\|aram used=%x size=%x` | Highest non-zero byte in main RAM / VRAM / audio RAM. Naomi has 32 MB main RAM, the Dreamcast 16 MB — does the game actually fit? (Backwards scan; stale data over-reports, i.e. a conservative upper bound.) |
-| `SERIALPOKE` | `naomi.cpp` `WriteMem_naomi` | `SERIALPOKE addr=%08x data=%08x` | Writes to the `NAOMI_COMM_*` (network/serial board) registers — does the port need to stub a comm board? |
-| `JVSREPORT` | `core/hw/maple/maple_jvs.cpp` JVS digital-input reply | `JVSREPORT buttons=%04x` | Player-1 JVS digital word on every input poll (active-high). Pressing each cabinet button while watching this line produced the **input map** for the DC pad shim. |
-
-### Phase 3 — where in the game's code does it happen?
-
-Same Naomi-mode capture, but attributing events to guest PCs so the functions
-could be found in Ghidra and patched. **Interpreter mode required** (see
-[caveat](#interpreter-vs-dynarec) below).
-
-| Tag | Where | Line format | Question it answers |
-|---|---|---|---|
-| `CARTDMAPC` | `naomi.cpp` `Naomi_DmaStart()` | `CARTDMAPC pc=%08x sp=%08x` | Guest PC and stack pointer at the moment the game kicks a cart DMA → locates the game's **cart-read function** (the port patches it to read from GD-ROM instead) and pins where the stack lives. |
-| `MAPLEPC` | `maple_jvs.cpp` `MIEImpl::handle_86_subcommand()` | `MAPLEPC cmd=86 sub=%02x pc=%08x` | Guest PC for each MIE (Maple JVS bridge) subcommand: `sub=15`/`33` = input polls, `01`/`03`/`0b` = EEPROM read/write → locates the **input and EEPROM functions** the port shims to Dreamcast equivalents. |
-| `BIOSEXEC` | `core/hw/sh4/interpr/sh4_interpreter.cpp` fetch path | `BIOSEXEC pc=%08x` | Any instruction executed inside Naomi BIOS ROM (phys `< 0x200000`) *after* the game's entry point (`0x8c04ae2c`, game-specific) has been reached — i.e. does the game **call back into the BIOS** after handoff? (It does: an EEPROM library at BIOS `0x60000` — a major porting obstacle.) Deduplicated per PC. |
-
-### Phase 4 — debugging the converted Dreamcast build
-
-The DC build replaces cart DMA with a **shim**: a small freestanding runtime
-placed at phys `0x0cfc0000–0x0cffffff`, which services a fake "G1 register
-mirror" block at phys `0x0cfc8800–0x0cfc9000` (the patched game writes its DMA
-programming there instead of to real G1 registers; `mirror+0x418` mirrors the
-`SB_GDST` "go" trigger). Several probes exist purely to watch that mechanism.
-
-| Tag | Where | Line format | Question it answers |
-|---|---|---|---|
-| `SHIMWATCH` | `naomi.cpp`, every 64th DMA | `SHIMWATCH addr=%08x` | Fired (once) if *anything* writes a non-zero byte into the planned shim home `0x0cfc0000–0x0cffffff` during a Naomi-mode run — proving the game never touches the region before the port claims it. Deliberately a **RAM content scan, not a write hook**: the ARM64 dynarec's fast memory path stores straight into host RAM, bypassing every C-level write function, so a hook would silently miss most writes. |
-| `MIRRORWR` | `core/hw/mem/addrspace.cpp` `writet()` | `MIRRORWR pc=%08x off=%03x val=%08x` | Every guest store into the G1 mirror block, with the storing PC — captures the patched game's DMA programming sequence (cart offset, destination, length, trigger). |
-| `MIERESP` | `core/hw/maple/maple_if.cpp` `maple_DoDma()` | `MIERESP sub=%02x addr=%08x data=<128 hex chars>` | The MIE's **actual reply bytes** (fixed 0x40-byte dump) plus the guest receive address, for JVS `0x86` transactions — captured *after* `RawDma` and the byte-order fixup, i.e. byte-identical to what lands in guest RAM. The DC shim synthesizes these replies; this is its reference corpus. (The reply buffer is zeroed first so the dump never leaks uninitialized host stack bytes.) |
-| `CLEO-MIE` | `maple_jvs.cpp` `BaseMIE::RawDma()` (both reply paths) | `CLEO-MIE cmd=%02x hdr_in=%08x replylen=%d reply=<hex>` | Same idea for **non-0x86** MIE commands (reset, GetID, Z80 firmware upload…): the full init ladder the game runs on real hardware, byte-exact, so the shim can service it. |
-
-#### Boot-hang dissection kit (Task 13)
-
-The DC build initially froze at boot with a black screen. These probes
-identify *where* a guest is stuck, whichever way it is stuck:
-
-| Tag | Where | Line format | Catches |
-|---|---|---|---|
-| `PCSAMPLE` | `sh4_interpreter.cpp` fetch path | `PCSAMPLE pc=%08x gdst_mirror=%08x` | Wall-clock 1 Hz sample of the fetched PC (plus the shim's mirrored `SB_GDST` word). Placed in the *fetch* path, not the outer timeslice loop, because a real-time-paced inner loop rarely reaches the outer loop — an outer-loop sampler starves. |
-| `HANG` | same | `HANG pc=%08x gdst_mirror=%08x` | **Busy spin**: >50 M consecutive fetches inside one <32-byte PC window (e.g. a `bf`-to-self DMA-completion poll). Threshold far above any bounded init loop, crossed near-instantly by a real spin. One-shot. |
-| `SLEEPWAIT` | `core/hw/sh4/interpr/sh4_opcodes.cpp` `SLEEP` opcode | `SLEEPWAIT pc=%08x pr=%08x gdst_mirror=%08x` | **Paced idle**: a guest parked on `SLEEP` barely advances the fetch count, starving both probes above; the emulator spends real seconds inside each `SLEEP`. Logged at the opcode itself, ~1/sec, with `pr` = who called the wait routine. |
-| `EXC` | `sh4_interpreter.cpp` `Run()` exception path | `EXC epc=%08x evn=%03x newpc=%08x vbr=%08x` | **Exception storm**: a fault taken every instruction (e.g. before the guest installs VBR handlers) short-circuits the inner loop and bypasses `PCSAMPLE`. Logs faulting PC, event code, vector, ~1/sec. |
-| `HWR` / `HWW` | `addrspace.cpp` `readt()`/`writet()` | `HWR pc=%08x addr=%08x val=%08x` | **Stuck inside one MMIO access**: guest MMIO reads/writes from the game's own code region (phys `0x0c020000–0x0c200000`, filtering out loader/BIOS noise), RAM accesses skipped, consecutive identical accesses collapsed. If the PC sampler freezes while the CPU burns, the *last* `HWR`/`HWW` line names the register whose emulator-side handler is looping. |
-| `MDODMA*` | `maple_if.cpp` `maple_DoDma()` | `MDODMA enter/rawdma_call/rawdma_ret/frame_done ...`, `MDODMA_RUNAWAY iters=%u addr=%08x hdr1=%08x` | The actual culprit class found: `maple_DoDma` runs **synchronously** from the guest's `SB_MDST=1` store and walks the descriptor list in an unbounded `while(!last)` loop — a malformed list (no end-bit) freezes the guest inside a single store opcode. Entry/exit bracketing pins a hang to one Maple frame; a **100 000-iteration guard** aborts the walk, clears `SB_MDST`, and logs, so the run survives to show what happens next. *(This guard is a real behavior change — see below.)* |
-
-#### "I/O BD IS NOT CONNECTED" hunt (Task 14c)
-
-The converted game booted but sat on an I/O-board error screen. Two probes,
-both heavily game-specific (addresses from Ghidra analysis of this game):
-
-| Tag | Where | Line format | Purpose |
-|---|---|---|---|
-| `STRWATCH` | `addrspace.cpp` `readt()` | `STRWATCH pa=%08x pc=%08x pr=%08x` | The error strings live at phys `0x0c0ca6dc–0x0c0ca740` with **no static xref** (computed resource offset). Trap any read of those bytes and log reader PC + PR → finds the text-draw call chain, working back to the decision. Deduped per address. |
-| `IOCHK` | `sh4_interpreter.cpp` fetch path | `IOCHK pc=%08x r0=%08x obj=%08x m10=%08x m7c=%08x conn=%08x specs=%08x mir=%08x` | Breakpoint-style snapshot at four PCs inside the game's scene loop (`0x0c04b08a/90/1fa/200`): the scene object (`*0x8c0c4510`), two of its vtable-method results, the I/O-enumeration flags, and `r0` (the just-returned gate value) → identifies which method gates the error scene. |
-| `CLEO-WATCH` | `addrspace.cpp` `writet()` | `CLEO-WATCH [%08x] = %08x pc=%08x pr=%08x` | Data watchpoint on two game variables (`0x0c0e842c`, `0x0c0e6298`): who writes them, from where. |
-
-### Hardware-behavior probes (`CLEO-*` in the standard log)
-
-Low-volume diffs of "what did the game program vs. what does a Dreamcast
-expect", used to reconcile Naomi 31 kHz arcade video / JVS I/O / cabinet GPIO
-with their DC equivalents:
-
-| Tag | Where | Logs |
+| | Naomi (arcade) | Dreamcast (console) |
 |---|---|---|
-| `CLEO-SPG` | `core/hw/pvr/pvr_regs.cpp` `pvr_WriteReg()` | Every **change** to the video-timing registers (`SPG_LOAD`, `FB_R_CTRL` incl. the vclk divider bit, `VO_CONTROL`, `SPG_HBLANK/VBLANK/WIDTH`, `VO_STARTX/Y`) with the writing PC/PR — who sets up display timing, and to what. |
-| `CLEO-GPIO` | `core/hw/sh4/modules/bsc.cpp` | Changes to the SH4 `PDTRA`/`PCTRA` GPIO ports with PC. On a Dreamcast these implement **video-cable detection**; on Naomi they mean something else entirely — a classic conversion trap. (`PCTRA` gets explicit read/write handlers, functionally identical to the plain register it replaces, plus logging.) |
-| `CLEO-CCR` | `core/hw/sh4/modules/ccn.cpp` | Cache-control register writes (masking out the transient invalidate bits) — spots cache/OC-RAM reconfiguration by the game. |
-| `CLEO-ARMRST` | `core/hw/aica/aica_if.cpp` | AICA ARM reset writes plus the first two words of audio RAM — was a sound driver actually uploaded before the ARM was released from reset? (Also raises the existing message from INFO to NOTICE.) |
+| Main RAM | 32 MB | 16 MB |
+| Video RAM | 16 MB | 8 MB |
+| Sound RAM | 8 MB | 2 MB |
+| Game storage | ROM cart (this game: 109 MB), memory-mapped, read by **G1 DMA** on demand | GD-ROM disc, block reads |
+| Input | Arcade **JVS** bus (sticks/buttons/coins) behind the **MIE** — a Z80-based I/O controller the game talks to over Maple bus command `0x86` | Maple bus controllers |
+| Settings storage | EEPROM on the cart board, accessed through BIOS routines | Flash / VMU |
+| Video out | 31 kHz arcade monitor | 15 kHz TV / VGA, cable auto-detected via SH4 GPIO pins |
+| BIOS | Naomi BIOS, which games may call back into | Dreamcast BIOS, completely different entry points |
 
-### Headless framebuffer → PNG (Task 18)
+A conversion has to answer, for each row: *does this game actually depend on
+that, how much, and from where in its code?* Guessing is fatal — you'd patch
+the wrong function or reserve the wrong memory. So instead of guessing, we
+made the emulator answer every question with logs. That is this fork.
 
-`core/ui/gui.cpp` `gui_dumpFramebuffer()`, called from
-`core/ui/mainui.cpp` after each rendered frame. Lets an unattended run (or an
-AI agent driving the emulator) verify what is on screen **without any OS
-screen-capture API/permission** — it reuses Flycast's own screenshot readback
-(`getScreenshot()` → renderer `GetLastFrame()`), so it reads the GL
-framebuffer directly.
+## 2. Method: three campaigns, two log channels
 
-- Enable: set `FLYCAST_SHOT=/abs/path/shot.png` before launch. Disabled (and
-  zero-cost) otherwise.
-- Triggers: every `FLYCAST_SHOT_EVERY` frames (default 60, overwriting the
-  same file), **and** on `SIGUSR1` (`kill -USR1 <pid>`) for an on-demand grab
-  — the reliable way to capture a *specific* screen; the periodic dump often
-  samples a transition/black frame.
-- Output: 640×480 8-bit RGB PNG.
+The instrumentation was built up across three distinct campaigns, and the
+probes only make sense in that order:
 
-## Behavior changes (everything else is pure logging)
+1. **Observe the original.** Run the untouched Naomi ROM under Flycast's
+   Naomi emulation and log *what the game uses*: which cart regions it
+   streams, how much RAM it really touches, what it does with inputs, EEPROM,
+   serial. Output: a requirements list for the port.
+2. **Attribute to code.** Re-run with the SH4 **interpreter** (not the
+   dynarec) and stamp every interesting hardware event with the **guest
+   program counter** that caused it. Output: the exact functions in the game
+   binary to patch — fed to Ghidra for static analysis.
+3. **Debug the converted build.** The game, rebuilt as a Dreamcast disc image
+   (a loader, a small resident runtime called the *shim*, and a patch table),
+   now runs under Flycast's *Dreamcast* emulation — and fails in new and
+   interesting ways. A third wave of probes dissects boot hangs and error
+   screens.
 
-1. **`maple_DoDma` runaway guard** (`maple_if.cpp`): after 100 000 descriptor
-   entries the walk is aborted, `SB_MDST` is cleared and `MDODMA_RUNAWAY`
-   logged. Upstream loops forever on such a list; this build escapes so the
-   log can show where the guest goes next. Diagnostic escape hatch, not a fix.
-2. **Reply-buffer zeroing** in `maple_DoDma`: guest-visible bytes are
-   unchanged (only `outlen` bytes were ever copied out); it only keeps the
-   `MIERESP` fixed-size dump from reading uninitialized host stack.
-3. **`BSC_PCTRA` handler swap** (`bsc.cpp`): plain auto-RW register → explicit
-   handlers with identical semantics, plus logging.
-4. **macOS build fixes** (not instrumentation): top-level `CMakeLists.txt`
-   gains `enable_language(OBJC)` (SDL2 subproject compiles `.m` files but
-   never enables OBJC — breaks under command-line tools + CMake 3.31) and the
-   MoltenVK bundling step is skipped unless Vulkan is enabled and an SDK is
-   present (this instrumentation build uses OpenGL).
-   `patches/flycast-syphon-build-fix.diff` must additionally be applied
-   *inside* the `core/deps/Syphon` submodule (submodules can't carry fork
-   commits): it makes Syphon's ObjC prefix-header PCH `PRIVATE` so it doesn't
-   poison Flycast's OBJC++ sources.
+Two log channels:
 
-## Game-specific constants
+- **`cartlog(...)`** — a deliberately tiny new logger
+  (`core/hw/naomi/cartlog.{cpp,h}`, ~20 lines). Appends printf-style lines to
+  the file named by the **`FLYCAST_CARTLOG`** environment variable (default
+  `flycast-cartlog.txt` in the working directory), `fflush`ed per line so a
+  hung or killed emulator loses nothing — essential when the very thing you
+  study is a hang. Every line starts with an uppercase tag (`CARTDMA`,
+  `WATERMARK`, …) so a capture is one `grep` away from an answer. Not gated
+  by any flag: this build always writes it.
+- **`NOTICE_LOG(..., "CLEO-...")`** — low-volume probes woven into Flycast's
+  normal logging, tagged `CLEO-` for grepping out of the standard log.
 
-The *techniques* are generic; these hardcoded values are specific to the
-Cleopatra Fortune Plus binary or to this port's layout. To reuse a probe on
-another game, re-derive them:
+In-code comments reference the port project's internal plan as
+`Phase N (Task M)`. Decoder: **Phase 2** = campaign 1 above, **Phase 3** =
+campaign 2, **Phase 4** = campaign 3; Task 4 = shim I/O work, Task 13 =
+boot-hang dissection, Task 14c = the I/O-board error screen, Task 18 =
+headless screenshots.
+
+---
+
+## 3. Campaign 1 — what does the game actually use?
+
+### 3.1 The cart-streaming map: `CARTDMA`, `CARTPIO`
+
+**Question.** A Naomi game doesn't load once — the 109 MB cart is a
+memory-mapped device the game streams from continuously via G1 DMA. On a
+Dreamcast there is no cart; every one of those reads must be re-issued as a
+GD-ROM disc read by the port's runtime. So: *which byte ranges does the game
+ever ask for, and where does it put them?*
+
+**Probe.** `Naomi_DmaStart()` (`core/hw/naomi/naomi.cpp`) fires on every
+cart→RAM DMA the game programs:
+
+```
+CARTDMA src=%08x dest=%08x len=%x     cart byte offset, phys RAM dest, length
+CARTPIO offset=%08x                   rare non-DMA reads via the PIO data port
+```
+
+The cart-side source offset wasn't exposed by the cartridge interface, so the
+diff adds a virtual `NaomiCartridge::GetDmaSrcOffset()` (`naomi_cart.h`) that
+reports the current `DmaOffset` (cart types that don't track one report 0).
+
+**What it found.** Across an attract loop, an overnight demo run, and a
+hands-on play-through to game over: **388 unique DMA requests**, spanning
+cart offsets 8 MB…96 MB, every destination inside main RAM, every length
+32-byte aligned — and exactly **one** PIO seek. The play pass added only 5
+requests over what demo mode already exercised, so attract/demo coverage was
+nearly complete. The top ~12 MB of the cart was never read by anything. That
+list of 388 `(offset, length, dest)` triples *is* the port's disc layout
+specification.
+
+### 3.2 Does it even fit? `WATERMARK`
+
+**Question.** The Dreamcast has half the main RAM, half the VRAM, a quarter
+of the sound RAM. Does the game actually *use* more than the Dreamcast has?
+
+**Probe.** Every 64th cart DMA, scan main RAM, VRAM and audio RAM backwards
+for the highest non-zero byte:
+
+```
+WATERMARK region=main|vram|aram used=%x size=%x
+```
+
+A content scan is crude — stale non-zero garbage high in a region inflates
+it — but that makes it a *conservative upper bound*, which is the correct
+direction to be wrong in for a "will it fit" decision.
+
+**What it found — including a lesson.** Main-RAM asset placement peaked at
+11.2 MB (fits in 16 MB), VRAM at 9.2 MB (~1 MB over the DC's 8 MB — flagged
+for texture cuts), sound RAM pegged at exactly 8 MB (the scan artifact case:
+a stale byte at the very top). The instructive one: the main-RAM scan showed
+a byte just under the **32 MB** line, which looked like the game keeping its
+stack at top-of-RAM — a port-killer if true. Campaign 2's actual SP logging
+(§4.1) later proved the stack lives at `0x8c00exxx`, ~60 KB above RAM base:
+the 32 MB hit was stale data. *Moral: a cheap conservative probe buys you the
+question; only a precise probe buys you the answer.*
+
+### 3.3 Deleting a problem with one grep: `SERIALPOKE`
+
+**Question.** Naomi boards have a serial/network interface (`NAOMI_COMM_*`
+registers). If the game touches it, the port needs a stub for it.
+
+**Probe.** Log every write into that register range
+(`WriteMem_naomi`, `core/hw/naomi/naomi.cpp`):
+
+```
+SERIALPOKE addr=%08x data=%08x
+```
+
+**What it found.** Zero lines, across every capture. Requirement deleted.
+Cheapest probe in the fork, best return on investment.
+
+### 3.4 The input map: `JVSREPORT`
+
+**Question.** Arcade sticks and buttons arrive as a 16-bit JVS word per
+player; the Dreamcast pad delivers a completely different structure. To write
+the input shim you need the exact bit layout *as this game reads it* — and
+the polarity.
+
+**Probe.** In the JVS digital-input handler (`core/hw/maple/maple_jvs.cpp`),
+log Player 1's word on every poll:
+
+```
+JVSREPORT buttons=%04x
+```
+
+**What it found.** Idle is `0x0000` in 4794 of 4794 idle reports → the word
+is **active-high** (which contradicted the initial assumption — the captures
+settled it). Then a supervised session pressing one control at a time
+produced a clean single-bit word per control (`8000` Start, `2000`/`1000`/
+`0800`/`0400` directions, `0200`/`0100` the two buttons), confirming the
+standard JVS layout bit by bit. That table is the pad-mapping contract for
+the port's input shim.
+
+---
+
+## 4. Campaign 2 — which code does it?
+
+Knowing *that* the game streams the cart is not enough; the port must patch
+the **function** that does it. These probes stamp hardware events with the
+guest PC. That only works reliably on the interpreter — see
+[§8](#8-interpreter-vs-dynarec-which-probes-need-which) for why the dynarec
+lies to you here.
+
+### 4.1 `CARTDMAPC` — finding the cart-read function
+
+At every cart-DMA kick, additionally log where the guest was:
+
+```
+CARTDMAPC pc=%08x sp=%08x
+```
+
+The PC pins the game's cart-read routine (one small function, patched by the
+port to call the shim's disc reader instead). The SP, logged for free,
+resolved the stack question from §3.2: real SP range `0x8c00e6e8`–
+`0x8c00ef28` across full captures — nowhere near the 32 MB scare.
+
+### 4.2 `MAPLEPC` — finding the input and EEPROM functions
+
+On Naomi, the game talks to the MIE (the Z80-based I/O controller) through
+Maple command `0x86` transactions with a subcommand byte: input polls,
+EEPROM reads, EEPROM writes all go through the same funnel. Log each one with
+its guest PC (`MIEImpl::handle_86_subcommand`, `core/hw/maple/maple_jvs.cpp`):
+
+```
+MAPLEPC cmd=86 sub=%02x pc=%08x
+```
+
+Subcommand decoding for this game: `sub=15`/`33` input polls, `01`/`03`
+EEPROM read/write. Counting occurrences also mattered: the *steady-state*
+input poll turned out to be a different subcommand (`0x33`, tens of
+thousands of hits) than the boot-time one (`0x15`) — so the port had to shim
+**two** call sites, which a single-sample measurement would have missed.
+
+### 4.3 `BIOSEXEC` — does the game call back into the BIOS?
+
+**Question.** After the Naomi BIOS hands control to the game, does the game
+ever jump back *into* BIOS code? Any such path is invisible to static
+analysis of the game binary alone — and every BIOS entry point used is
+something the port must replace, because the Dreamcast BIOS has none of them.
+
+**Probe.** In the interpreter's instruction-fetch path
+(`core/hw/sh4/interpr/sh4_interpreter.cpp`): once the game's entry point
+(`0x8c04ae2c` for this binary) has been fetched, flag any subsequent fetch
+inside BIOS ROM (physical `< 0x200000`), deduplicated per PC:
+
+```
+BIOSEXEC pc=%08x
+```
+
+**What it found.** The game *does* re-enter the BIOS: it thunks into a
+settings/EEPROM library the Naomi BIOS keeps at ROM offset `0x60000`. That
+library bit-bangs the cart-board EEPROM through hardware registers that don't
+exist on a Dreamcast — on real DC hardware it spins forever on a G1 status
+poll. This single log line predicted what later became the hardest real-
+hardware bug of the port. If you instrument only one thing on a conversion,
+instrument this.
+
+---
+
+## 5. Campaign 3 — debugging the converted build
+
+From here on, the game is no longer running as a Naomi ROM. It has been
+rebuilt as a Dreamcast disc: a loader, the patched game, and a small
+resident runtime — the **shim** — parked in the last 256 KB of Dreamcast RAM
+(physical `0x0cfc0000–0x0cffffff`). The patched game no longer programs the
+G1 cart-DMA registers; it writes the same programming sequence into a fake
+"register mirror" block inside the shim's RAM (physical
+`0x0cfc8800–0x0cfc9000`, with the DMA "go" trigger mirrored at offset
+`+0x418`, i.e. `0x0cfc8c18`), and the shim services it with GD-ROM reads.
+Three probe families exist to watch exactly that machinery.
+
+### 5.1 `SHIMWATCH` — is the shim's home actually free?
+
+**Question.** The shim occupies RAM the original game supposedly never
+touches. *Supposedly* — prove it.
+
+**The trap.** The obvious probe is a write hook on that address range. It
+would silently miss most writes: Flycast's ARM64 **dynarec fast path** stores
+register-indirect writes straight into host-mapped RAM, bypassing every
+C-level write function (`core/rec-ARM64/rec_arm64.cpp`,
+`GenWriteMemoryFast`/`GenWriteMemoryImmediate`). Your hook sees a quiet
+region; the game scribbles all over it. This class of bug — *instrumenting
+the emulator's slow path while the fast path does the work* — is worth
+internalizing before trusting any emulator-based measurement.
+
+**Probe.** Don't hook writes; scan **content**. At the same 64-DMA cadence as
+`WATERMARK`, scan the range for any non-zero byte; one-shot report:
+
+```
+SHIMWATCH addr=%08x
+```
+
+A write that lands and is zeroed again between samples would be missed —
+accepted trade-off, same as any sampling scan. **Result:** never fired
+during Naomi-mode runs; the region is genuinely free.
+
+### 5.2 `MIRRORWR` — watching the patched game talk to the shim
+
+Log every guest store into the mirror block, with the storing PC
+(`writet()`, `core/hw/mem/addrspace.cpp`):
+
+```
+MIRRORWR pc=%08x off=%03x val=%08x
+```
+
+This shows the patched game's full DMA programming conversation — cart
+offset, destination, length, then `1` to the `+0x418` trigger — and *who*
+wrote each word, which is how you notice a patch you forgot, an alias you
+didn't expect (the game reaches the block through its uncached `0xacfcxxxx`
+mapping), or a write arriving out of order.
+
+### 5.3 Byte-exact I/O forgery: `MIERESP`, `CLEO-MIE`
+
+**Question.** The DC build has no MIE, but the game still runs its full MIE
+conversation at boot — reset, GetID, even uploading firmware to the MIE's
+Z80 — and then polls it for input forever. The shim must impersonate the MIE
+convincingly. Impersonation needs a transcript.
+
+**Probes.** Two capture points, chosen so the logged bytes are exactly what
+the *game* sees, not what the emulator computed internally:
+
+- `MIERESP sub=%02x addr=%08x data=<128 hex chars>` — in `maple_DoDma()`
+  (`core/hw/maple/maple_if.cpp`), for JVS `0x86` transactions: a fixed
+  64-byte dump of the reply, taken *after* the device handler ran **and
+  after the byte-order fixup**, i.e. byte-identical to what lands in guest
+  RAM at the destination (`addr=`) from the Maple descriptor. (The reply
+  buffer is zeroed beforehand so the fixed-size dump can't leak uninitialized
+  host stack into the log.)
+- `CLEO-MIE cmd=%02x hdr_in=%08x replylen=%d reply=<hex>` — in
+  `BaseMIE::RawDma()` (`core/hw/maple/maple_jvs.cpp`), same idea for every
+  **non-`0x86`** MIE command: the boot-time init ladder, byte-exact.
+
+Together these gave the shim its reference corpus: for each request the game
+makes, the exact reply a real MIE produces. On real hardware the game runs
+this ladder even though Flycast's high-level boot skips parts of it — the
+transcript is what made the shim's replies survive contact with a real
+Dreamcast.
+
+---
+
+## 6. Interlude — four ways an emulated CPU can look hung
+
+The converted build's first boots on the Dreamcast side died as a black
+screen. "It hangs" is not a bug report; the Task-13 kit turns it into one.
+The insight worth stealing: **a guest can look frozen in at least four
+mechanically different ways, and each starves a different naive detector.**
+All lines include `gdst_mirror=`, the shim's mirrored DMA trigger word — the
+single most informative variable for *this* port's hangs ("is the game
+waiting on a disc read the shim never completed?").
+
+| Failure mode | Why the naive detector misses it | Probe |
+|---|---|---|
+| **Busy spin** — a `bf`-to-self poll loop | A periodic "print the PC" in the outer scheduler loop works here — but only here | `HANG pc=… gdst_mirror=…` (`sh4_interpreter.cpp`): >50 M consecutive fetches inside one <32-byte PC window. The threshold is far above any real init/delay loop (largest observed ~1 M iterations) yet a true spin crosses it in under a second. One-shot. |
+| **Paced idle** — guest parked on `SLEEP` | Fetch counters barely advance (the emulator spends ~a real second *inside each `SLEEP`*, servicing the scheduler), so spin detectors and fetch-based samplers starve | `SLEEPWAIT pc=… pr=… gdst_mirror=…` (`sh4_opcodes.cpp`): logged at the `SLEEP` opcode itself, ~1/sec; `pr` names who called the wait routine. |
+| **Exception storm** — a fault taken every instruction (e.g. before the guest installs its VBR handlers) | Control short-circuits from the fault straight back to the dispatch loop; the fetch-path sampler never runs | `EXC epc=… evn=… newpc=… vbr=…` (`Run()`'s exception path): faulting PC, SH4 event code (`0x180` illegal instruction, `0x0e0`/`0x100` address errors, …), vector taken. ~1/sec. |
+| **Stuck inside one MMIO access** — the guest executed a load/store whose *emulator-side handler* loops, so the guest never even finishes one instruction | From the guest's perspective time has stopped; no guest-side detector can fire at all | `HWR`/`HWW pc=… addr=… val=…` (`addrspace.cpp`): every MMIO access from the game's own code region, consecutive duplicates collapsed. When everything else freezes, **the last `HWR`/`HWW` line names the register whose handler you're stuck in.** |
+
+Plus a heartbeat that survives three of the four:
+`PCSAMPLE pc=%08x gdst_mirror=%08x` — a **wall-clock** 1 Hz sample placed in
+the instruction-*fetch* path, not the outer loop, precisely because a
+heavily real-time-paced inner loop may not reach the outer loop for seconds.
+
+### 6.1 The culprit it caught: `MDODMA*`
+
+The fourth failure mode was the real one. Flycast's `maple_DoDma()` runs
+**synchronously inside the guest's `SB_MDST=1` store** and walks the Maple
+descriptor list with an unbounded `while (!last)` — `last` being a bit in
+each descriptor header. Feed it a malformed list whose end-bit never comes
+(easy to do when you're forging Maple traffic from a hand-written shim) and
+the emulator walks memory forever *inside one guest store instruction*:
+guest frozen, host CPU pinned, every guest-side probe silent.
+
+The probe brackets the walk and adds an escape hatch:
+
+```
+MDODMA enter mdstar=%08x hdr0=%08x mden=%d pc=%08x    entering the walk
+MDODMA rawdma_call cmd=%02x reci=%02x bus=%d plen=%u  per frame, before the device handler
+MDODMA rawdma_ret outlen=%x                            after it ("call" with no "ret" = handler hung)
+MDODMA frame_done outlen=%x                            reply queued
+MDODMA_RUNAWAY iters=%u addr=%08x hdr1=%08x            guard tripped
+```
+
+After 100 000 descriptors the guard logs `MDODMA_RUNAWAY`, clears `SB_MDST`
+(so the guest's completion poll can exit) and abandons the walk — **a
+deliberate behavior change** (upstream would loop forever), not a fix: it
+exists so the run survives long enough to show where the guest goes next.
+
+---
+
+## 7. Case study — the "I/O BD IS NOT CONNECTED" screen
+
+With boot unstuck, the game came up… onto an arcade error screen: it had
+probed for its JVS I/O board, and the shim's MIE impersonation hadn't
+convinced it. The question became: *which check, exactly, decides to show
+this screen?* Two probes, and a third as a general tool — a nice showcase of
+what you can do when the "debugger" is an emulator you can recompile:
+
+- **Data watchpoint on the message itself.** The error strings sit at
+  physical `0x0c0ca6dc–0x0c0ca740` with **no static cross-reference** — the
+  game computes the address as resource-base + offset, so Ghidra shows
+  nothing pointing at them. So trap the *read*: in `readt()`, log any access
+  to those bytes with reader PC and PR, deduped per address:
+
+  ```
+  STRWATCH pa=%08x pc=%08x pr=%08x
+  ```
+
+  The reading PC is the text renderer; its PR (return address) starts the
+  walk back up the call chain toward the decision.
+
+- **Software breakpoints without a debugger.** Once static analysis narrowed
+  the decision to the game's scene loop, four PCs inside it
+  (`0x0c04b08a/90/1fa/200`) were turned into logging breakpoints by a PC
+  compare in the interpreter's fetch path. Each hit snapshots the scene
+  object (`*0x8c0c4510`), two of its vtable-method results, the game's
+  I/O-enumeration flags, and `r0` — the value the gate method just returned:
+
+  ```
+  IOCHK pc=… r0=… obj=… m10=… m7c=… conn=… specs=… mir=…
+  ```
+
+  Zero-setup, survives reboots, costs one compare per fetched instruction —
+  for interpreter-mode work this is often *better* than a real debugger.
+
+- **Plain data watchpoints.** Same trick for two game variables
+  (`0x0c0e842c`, `0x0c0e6298`) whose writers needed identifying:
+
+  ```
+  CLEO-WATCH [%08x] = %08x pc=%08x pr=%08x
+  ```
+
+---
+
+## 8. Hardware-difference tripwires: the `CLEO-*` probes
+
+Low-volume change-loggers in Flycast's standard log, each guarding one known
+Naomi↔Dreamcast difference. They log only on *change*, with the writing PC,
+so they read like a story rather than a firehose:
+
+| Tag | Where | Guards against |
+|---|---|---|
+| `CLEO-SPG` | `core/hw/pvr/pvr_regs.cpp` | Video-timing programming: any change to `SPG_LOAD`, `FB_R_CTRL` (incl. the pixel-clock divider bit), `VO_CONTROL`, `SPG_HBLANK/VBLANK/WIDTH`, `VO_STARTX/Y`. A Naomi game programs a 31 kHz arcade monitor; if nobody re-programs those registers for a TV, this log shows you exactly who set what, from where. |
+| `CLEO-GPIO` | `core/hw/sh4/modules/bsc.cpp` | SH4 GPIO port writes (`PDTRA`, and `PCTRA` — which gets explicit, semantically identical read/write handlers so it can log). On a Dreamcast these pins are the **video-cable auto-detect**; on a Naomi they mean something else. A conversion that lets Naomi-era GPIO writes through can convince a Dreamcast it has the wrong cable. |
+| `CLEO-CCR` | `core/hw/sh4/modules/ccn.cpp` | Cache-control writes (masking the transient invalidate bits): spots the game reconfiguring the SH4 cache/OC-RAM behind your back. |
+| `CLEO-ARMRST` | `core/hw/aica/aica_if.cpp` | AICA ARM reset release, plus the first two words of sound RAM at that instant — i.e. *was a sound driver actually uploaded before the ARM was let loose?* All zeros = the ARM is about to execute garbage. |
+
+---
+
+## 9. Seeing the screen without asking the OS: `FLYCAST_SHOT`
+
+Long unattended captures (and AI-agent-driven debugging sessions) need to
+answer "what is on screen right now?" without a human watching — and on
+macOS, without triggering the screen-recording permission (TCC) machinery.
+So the emulator photographs *itself*: `gui_dumpFramebuffer()`
+(`core/ui/gui.cpp`, called after each rendered frame from
+`core/ui/mainui.cpp`) reuses Flycast's own screenshot readback
+(`getScreenshot()` → renderer `GetLastFrame()`) and writes a 640×480 RGB PNG.
+
+- `FLYCAST_SHOT=/abs/path/shot.png` enables it (zero-cost when unset).
+- The file is rewritten every `FLYCAST_SHOT_EVERY` frames (default 60), and
+  **on `SIGUSR1`** — `kill -USR1 <pid>` — for an on-demand grab. The signal
+  is the reliable way to capture a *specific* screen; the periodic dump loves
+  to sample a transition/black frame.
+- Read with copy-then-open; the write is a single `fwrite` but not atomic.
+
+---
+
+## 10. Honesty section: what changes emulator behavior
+
+Everything in this fork is pure logging, **except**:
+
+1. **The `maple_DoDma` runaway guard** (§6.1): aborts a >100 000-descriptor
+   walk, clears `SB_MDST`, logs. Upstream loops forever; this build escapes.
+   A diagnostic escape hatch — if you're validating final images, be aware
+   it can mask a genuinely malformed descriptor list.
+2. **Reply-buffer zeroing** in `maple_DoDma`: guest-visible bytes unchanged
+   (only `outlen` bytes were ever copied to the guest); it exists so the
+   fixed-size `MIERESP` dump can't read uninitialized host stack.
+3. **`BSC_PCTRA` handler swap**: auto read/write register → explicit
+   handlers with identical semantics, purely to gain the log line.
+4. **`ARMRST` log level** raised INFO → NOTICE.
+5. **macOS build fixes**, orthogonal to instrumentation: top-level
+   `CMakeLists.txt` adds `enable_language(OBJC)` (the SDL2 subproject
+   compiles `.m` files but never enables the language — breaks under
+   command-line tools + CMake 3.31) and only bundles MoltenVK when Vulkan is
+   actually enabled and an SDK exists. A third fix lives in
+   `patches/flycast-syphon-build-fix.diff` because it targets the
+   `core/deps/Syphon` **submodule** (a fork can't carry submodule commits):
+   it makes Syphon's ObjC prefix header `PRIVATE` so it stops poisoning
+   Flycast's Objective-C++ sources.
+
+## 11. What's game-specific (re-derive these for your game)
+
+The techniques are general; these constants are baked in for the Cleopatra
+Fortune Plus binary and this port's memory layout:
 
 | Constant | Used by | Meaning |
 |---|---|---|
-| `0x8c04ae2c` | `BIOSEXEC` arming | Game entry point (BIOS→game handoff). |
-| phys `0x0c020000–0x0c200000` | `HWR`/`HWW` filter | The game's own code region (loads at `0x8c020000`); filters loader/BIOS noise. |
-| phys `0x0cfc0000–0x0cffffff` | `SHIMWATCH` | Port-defined shim home. |
-| phys `0x0cfc8800–0x0cfc9000`, trigger `+0x418` | `MIRRORWR`, `gdst_mirror=` fields | Port-defined G1 register-mirror block serviced by the shim. |
-| phys `0x0c0ca6dc–0x0c0ca740` | `STRWATCH` | "I/O BD IS NOT CONNECTED" string block. |
-| `0x0c04b08a/90/1fa/200`, `0x8c0c4510`, `0x8c1c9774`, `0x8c0d541c`, `0x8c127b0c` | `IOCHK` | Scene-loop test PCs, scene-object pointer, I/O-enumeration flags. |
+| `0x8c04ae2c` | `BIOSEXEC` arming | This game's entry point (BIOS→game handoff). |
+| phys `0x0c020000–0x0c200000` | `HWR`/`HWW` PC filter | The game's own code region (its boot image loads at `0x8c020000`); filters out loader/BIOS noise. Matching is on the *physical* PC so cached (`0x8c…`) and uncached (`0xac…`) aliases both count. |
+| phys `0x0cfc0000–0x0cffffff` | `SHIMWATCH` | Port-defined shim residence. |
+| phys `0x0cfc8800–0x0cfc9000` (+`0x418` trigger) | `MIRRORWR`, every `gdst_mirror=` field | Port-defined G1 register-mirror block. |
+| phys `0x0c0ca6dc–0x0c0ca740` | `STRWATCH` | The error-string block being hunted in §7. |
+| `0x0c04b08a/90/1fa/200`, `0x8c0c4510`, `0x8c1c9774`, `0x8c0d541c`, `0x8c127b0c` | `IOCHK` | Scene-loop breakpoint PCs, scene-object pointer, I/O-enumeration flags. |
 | phys `0x0c0e842c`, `0x0c0e6298` | `CLEO-WATCH` | Two watched game variables. |
 
-## Interpreter vs dynarec
+One implementation detail you'll want when adapting: probes in memory-access
+handlers log `pc - 2`, because the interpreter's `ReadNexOp` advances
+`ctx->pc` to the *next* instruction before executing the current one — the
+raw `pc` at handler time points one instruction past the access.
 
-Probes that read the guest PC at fetch/memory-access time only see exact,
-per-instruction state on the **interpreter**; the ARM64 dynarec's fast memory
-path also bypasses `readt`/`writet` entirely for RAM and can skip the hooked
-paths. For any capture involving `CARTDMAPC`, `MAPLEPC`, `BIOSEXEC`, `HANG`,
-`PCSAMPLE`, `SLEEPWAIT`, `EXC`, `HWR`/`HWW`, `MIRRORWR`, `STRWATCH`, `IOCHK`
-(and for trustworthy `pc=` fields anywhere), disable the dynarec:
-`Dynarec.Enabled=no` under `[config]` in `emu.cfg`, or select the Interpreter
-in the GUI's CPU settings. Expect ~10× slowdown.
+## 12. Interpreter vs dynarec: which probes need which
 
-Device-level probes (`CARTDMA`, `CARTPIO`, `WATERMARK`, `SHIMWATCH`,
-`SERIALPOKE`, `JVSREPORT`, `MIERESP`, `MDODMA*`, `CLEO-MIE`, `CLEO-SPG`,
-`CLEO-GPIO`, `CLEO-CCR`, `CLEO-ARMRST`) fire under the dynarec too — that is
-exactly why `SHIMWATCH` is a content scan rather than a write hook.
+Rule of thumb: **anything that reports a `pc=` needs the interpreter;
+anything that hooks a device fires regardless.**
 
-## Building (macOS notes)
+- The ARM64 dynarec's fast path performs RAM loads/stores inline in
+  generated code, bypassing `readt`/`writet` — so `MIRRORWR`, `STRWATCH`,
+  `CLEO-WATCH`, `HWR`/`HWW` go blind (see the §5.1 trap). And nothing
+  outside the interpreter fetches instructions through `ReadNexOp`, so
+  `BIOSEXEC`, `HANG`, `PCSAMPLE`, `IOCHK` (and `SLEEPWAIT`, `EXC`) never
+  fire. Even in device probes that *do* fire, the `pc=` field is only
+  instruction-exact under the interpreter.
+- Device/MMIO probes work under either engine: `CARTDMA`, `CARTPIO`,
+  `WATERMARK`, `SHIMWATCH` (content scan — that's the point), `SERIALPOKE`,
+  `JVSREPORT`, `MIERESP`, `MDODMA*`, and all `CLEO-*`.
 
-General build instructions are upstream's. This fork was built on macOS/arm64,
-which needed, beyond the in-tree CMake fixes:
+Enable the interpreter with `Dynarec.Enabled=no` under `[config]` in
+`emu.cfg`, or select the Interpreter in the GUI's CPU settings. Budget ~10×
+slowdown; captures here typically ran minutes, not hours.
 
-- **CMake 3.31.x** (Kitware binary) — Homebrew CMake 4.x fails at generate on
-  this Flycast base (cmrc/OBJC).
-- Full Xcode via `export DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer`
-  (OBJC ABI detection needs `xcodebuild`; CommandLineTools alone fails).
-- Submodules first, then the Syphon patch **inside the submodule**:
+## 13. Building (macOS notes) and a capture cookbook
+
+General builds: follow upstream. This fork was developed on macOS/arm64,
+which additionally needed:
+
+- **CMake 3.31.x** (Kitware binary — Homebrew's CMake 4.x fails at generate
+  time on this base).
+- Full Xcode: `export DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer`
+  (Objective-C ABI detection shells out to `xcodebuild`; CommandLineTools
+  alone fails).
+- Submodules, then the Syphon patch **inside the submodule**:
 
 ```sh
 git submodule update --init --recursive
@@ -217,22 +539,52 @@ cmake -B build -DCMAKE_BUILD_TYPE=Release \
 cmake --build build -j"$(sysctl -n hw.ncpu)"
 ```
 
-Unattended-run gotchas found the hard way (macOS): launch with
-`-config config:rend.vsync=no` or the emu thread can deadlock once the window
-loses focus, and
+Two macOS gotchas that each cost a debugging session: launch unattended runs
+with `-config config:rend.vsync=no` (otherwise the emu thread can deadlock
+once the window loses focus), and
 `defaults write com.flyinghead.Flycast ApplePersistenceIgnoreState -bool YES`
-or a previously killed instance makes the *next* launch block on an invisible
-"reopen windows?" state (process alive at ~0 % CPU, guest never boots).
+(after a killed instance, macOS's window-restore state silently blocks the
+*next* launch — process alive at ~0 % CPU, guest never boots).
 
-## Typical capture session
+A typical session:
 
 ```sh
 FLYCAST_CARTLOG=/tmp/capture.log \
 FLYCAST_SHOT=/tmp/shot.png FLYCAST_SHOT_EVERY=60 \
   ./build/flycast -config config:rend.vsync=no /path/to/game &
-# ... let it boot/attract/play ...
-kill -USR1 %1        # on-demand screenshot
-grep '^CARTDMA '  /tmp/capture.log | sort -u   # cart-streaming map
-grep '^WATERMARK' /tmp/capture.log | tail -3   # RAM high-water marks
-grep '^JVSREPORT' /tmp/capture.log | uniq -c   # input words seen
+# ... let it boot / attract / play ...
+kill -USR1 %1                                   # screenshot on demand
+grep '^CARTDMA '  /tmp/capture.log | sort -u    # the streaming map
+grep '^WATERMARK' /tmp/capture.log | tail -3    # RAM high-water marks
+grep '^JVSREPORT' /tmp/capture.log | uniq -c    # input words seen
 ```
+
+## 14. Quick tag reference
+
+| Tag | Channel | One-liner |
+|---|---|---|
+| `CARTDMA src dest len` | cartlog | Cart→RAM DMA request (the streaming map). |
+| `CARTPIO offset` | cartlog | Cart PIO seek (non-DMA reads). |
+| `WATERMARK region used size` | cartlog | Highest non-zero byte in main/VRAM/ARAM (upper bound). |
+| `SERIALPOKE addr data` | cartlog | Write to Naomi serial/network registers. |
+| `JVSREPORT buttons` | cartlog | P1 JVS digital word, active-high, per poll. |
+| `CARTDMAPC pc sp` | cartlog | Guest PC/SP at cart-DMA kick (interpreter). |
+| `MAPLEPC cmd=86 sub pc` | cartlog | Guest PC per MIE subcommand: input/EEPROM sites (interpreter). |
+| `BIOSEXEC pc` | cartlog | Post-handoff execution inside BIOS ROM (interpreter). |
+| `SHIMWATCH addr` | cartlog | Non-zero byte found in the shim's home range (content scan). |
+| `MIRRORWR pc off val` | cartlog | Guest store into the shim's G1 mirror block (interpreter). |
+| `MIERESP sub addr data` | cartlog | Byte-exact 64-byte MIE reply + guest destination (cmd `0x86`). |
+| `CLEO-MIE cmd hdr_in replylen reply` | NOTICE_LOG | Byte-exact MIE reply, non-`0x86` commands. |
+| `PCSAMPLE pc gdst_mirror` | cartlog | 1 Hz wall-clock PC heartbeat (interpreter). |
+| `HANG pc gdst_mirror` | cartlog | Busy-spin detector (>50 M fetches in a <32 B window). |
+| `SLEEPWAIT pc pr gdst_mirror` | cartlog | Guest parked on `SLEEP`, ~1/sec. |
+| `EXC epc evn newpc vbr` | cartlog | Exception-storm sampler, ~1/sec. |
+| `HWR`/`HWW pc addr val` | cartlog | MMIO access from game code, dupes collapsed (interpreter). |
+| `MDODMA …` / `MDODMA_RUNAWAY …` | cartlog | Maple DMA walk bracketing + runaway guard. |
+| `STRWATCH pa pc pr` | cartlog | Read of the watched string bytes (data watchpoint, interpreter). |
+| `IOCHK pc r0 obj …` | cartlog | Logging breakpoints in the scene loop (interpreter). |
+| `CLEO-WATCH [addr] = val pc pr` | NOTICE_LOG | Data watchpoint on two game variables (interpreter). |
+| `CLEO-SPG …` | NOTICE_LOG | Video-timing register changes, with writer PC. |
+| `CLEO-GPIO …` | NOTICE_LOG | SH4 GPIO (`PDTRA`/`PCTRA`) changes, with writer PC. |
+| `CLEO-CCR …` | NOTICE_LOG | Cache-control register changes. |
+| `CLEO-ARMRST …` | NOTICE_LOG | AICA ARM reset release + first sound-RAM words. |
