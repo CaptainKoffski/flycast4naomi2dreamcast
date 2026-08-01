@@ -141,6 +141,29 @@ stack at top-of-RAM — a port-killer if true. Campaign 2's actual SP logging
 the 32 MB hit was stale data. *Moral: a cheap conservative probe buys you the
 question; only a precise probe buys you the answer.*
 
+**The precise probe: `ARAMPROFILE`.** The sound-RAM peg is the moral in
+miniature — a content scan literally cannot tell a stale/BIOS byte from a real
+game write, so "8 MB" meant nothing. The fix is to measure *writes*, not
+content. At the first cart DMA (game handoff — cart DMAs target *main* RAM, so
+sound reaches ARAM only later via G2/AICA DMA and nothing is lost) zero ARAM
+once; afterward every non-zero byte is a genuine game/AICA sound write. Then
+report the true high-water plus a 256 KB-bucket histogram (so a lone stray write
+is distinguishable from dense use):
+
+```
+ARAMHANDOFF zeroed size=%x
+ARAMPROFILE high=%x nz=%x nz_below2m=%x nz_above2m=%x size=%x
+ARAMHIST <one non-zero-byte count per 256 KB bucket; bucket 8+ = past 2 MB>
+```
+
+**What it found.** The game writes only ARAM `0x0-0x1fffff` — **exactly 2 MB,
+zero bytes above** — loaded once at boot as a fixed bank (histogram buckets 8-31,
+the 2-8 MB range, stay all-zero). Stable across attract, demo, and a hands-on
+gameplay round through drops/clears/combos/stage changes. The game already
+targets a ≤2 MB sound config, so it fits the Dreamcast's 2 MB ARAM natively — no
+sample cuts. The conservative scan asked "does it fit?"; the write-truth probe
+answered "yes, exactly."
+
 ### 3.3 Deleting a problem with one grep: `SERIALPOKE`
 
 **Question.** Naomi boards have a serial/network interface (`NAOMI_COMM_*`
@@ -509,8 +532,9 @@ anything that hooks a device fires regardless.**
   fire. Even in device probes that *do* fire, the `pc=` field is only
   instruction-exact under the interpreter.
 - Device/MMIO probes work under either engine: `CARTDMA`, `CARTPIO`,
-  `WATERMARK`, `SHIMWATCH` (content scan — that's the point), `SERIALPOKE`,
-  `JVSREPORT`, `MIERESP`, `MDODMA*`, and all `CLEO-*`.
+  `WATERMARK`, `SHIMWATCH` (content scan — that's the point), `ARAMHANDOFF` /
+  `ARAMPROFILE` / `ARAMHIST` (fire from the cart-DMA handler, same as
+  `WATERMARK`), `SERIALPOKE`, `JVSREPORT`, `MIERESP`, `MDODMA*`, and all `CLEO-*`.
 
 Enable the interpreter with `Dynarec.Enabled=no` under `[config]` in
 `emu.cfg`, or select the Interpreter in the GUI's CPU settings. Budget ~10×
