@@ -164,6 +164,37 @@ targets a ≤2 MB sound config, so it fits the Dreamcast's 2 MB ARAM natively �
 sample cuts. The conservative scan asked "does it fit?"; the write-truth probe
 answered "yes, exactly."
 
+**The same probe, aimed at VRAM: `VRAMPROFILE`.** That left the 9.2 MB VRAM
+flag — same disease, same cure, one new wrinkle. Zero VRAM at the same handoff
+point (texture uploads can't precede the game's first asset fetch; the only
+casualty is the BIOS boot screen) and profile genuine writes against the DC's
+8 MB line. The wrinkle is a Flycast blind spot: the TA parses display lists
+into host-side structures and rendering happens on the host GPU, so ISP/OL
+buffers and framebuffer pixels never appear as vram-array *content*, even
+though they occupy real VRAM on hardware. `VRAMREGS` covers those regions by
+*layout* instead — the TA base/limit and framebuffer start registers — so the
+real footprint is max(content high-water, TA limits, FB extents):
+
+```
+VRAMHANDOFF zeroed size=%x
+VRAMPROFILE high=%x nz=%x nz_below8m=%x nz_above8m=%x size=%x
+VRAMHIST <one non-zero-byte count per 256 KB bucket; bucket 32+ = past 8 MB>
+VRAMREGS isp_base=%x isp_limit=%x ol_base=%x ol_limit=%x fb_w_sof1=%x fb_w_sof2=%x fb_r_sof1=%x
+```
+
+**What it found.** The 9.2 MB was never game data: the Naomi BIOS parks its
+framebuffers at `0x800000`/`0xc00000`, and the boot screen drawn there sat in
+VRAM as stale bytes the content scan dutifully counted. The game's own writes
+peak at 7.8 MB with **zero bytes at or above the 8 MB line** in every snapshot
+(attract and a hands-on play round agree), and its own layout double-buffers
+two 4 MB banks — TA lists at `0x0`/`0x400000`, framebuffers at
+`0x0b2000`/`0x4b2000` — everything below `0x800000`. (Address-space footnote:
+the content scan indexes the 64-bit/texture path while the registers hold
+32-bit-path addresses; `pvr_map32()` in `core/hw/pvr/pvr_mem.cpp` preserves
+bit 23, so "below 8 MB" in either space means the lower physical 8 MB.) Both
+fit flags the crude scan raised were stale-byte artifacts; the write-truth
+probe closed both.
+
 ### 3.3 Deleting a problem with one grep: `SERIALPOKE`
 
 **Question.** Naomi boards have a serial/network interface (`NAOMI_COMM_*`
@@ -533,8 +564,9 @@ anything that hooks a device fires regardless.**
   instruction-exact under the interpreter.
 - Device/MMIO probes work under either engine: `CARTDMA`, `CARTPIO`,
   `WATERMARK`, `SHIMWATCH` (content scan — that's the point), `ARAMHANDOFF` /
-  `ARAMPROFILE` / `ARAMHIST` (fire from the cart-DMA handler, same as
-  `WATERMARK`), `SERIALPOKE`, `JVSREPORT`, `MIERESP`, `MDODMA*`, and all `CLEO-*`.
+  `ARAMPROFILE` / `ARAMHIST` and `VRAMHANDOFF` / `VRAMPROFILE` / `VRAMHIST` /
+  `VRAMREGS` (fire from the cart-DMA handler, same as `WATERMARK`),
+  `SERIALPOKE`, `JVSREPORT`, `MIERESP`, `MDODMA*`, and all `CLEO-*`.
 
 Enable the interpreter with `Dynarec.Enabled=no` under `[config]` in
 `emu.cfg`, or select the Interpreter in the GUI's CPU settings. Budget ~10×

@@ -41,6 +41,7 @@
 // mem_b/RAM_SIZE = main system RAM (sh4_mem.h, already included); vram/VRAM_SIZE
 // (pvr_mem.h); aica::aica_ram/ARAM_SIZE (aica_if.h). Sizes are macros in types.h.
 #include "hw/pvr/pvr_mem.h"
+#include "hw/pvr/pvr_regs.h"   // Phase 5: TA/FB layout regs for the VRAM profile
 #include "hw/aica/aica_if.h"
 #include <cstdio>              // Phase 5: snprintf for the ARAM histogram line
 
@@ -206,6 +207,42 @@ static void cartlog_aram_profile()
 	cartlog("ARAMHIST %s\n", line);   // nz-byte count per 256 KB bucket (bucket 8+ = past 2 MB)
 }
 
+// Phase 5 (VRAM fit): write-truth profile, same method as cartlog_aram_profile
+// above. The 9.2 MB WATERMARK figure came from the never-cleared content scan --
+// stale BIOS/boot bytes count toward it. Fix: zero VRAM once at game handoff
+// (first cart DMA; the game's texture uploads can only start after its first
+// asset fetch, and the BIOS boot screen is expendable), after which every
+// non-zero byte is a genuine post-handoff write. Report true high-water +
+// non-zero counts below/above DC's 8 MB + a 256 KB-bucket histogram.
+// Blind spot: in Flycast the TA parses display lists into host-side structures
+// and rendering happens on the host GPU, so ISP/OL buffers and framebuffers
+// never appear as vram-array content (on real HW they occupy VRAM). VRAMREGS
+// snapshots their layout registers instead -- the real footprint is
+// max(content high-water, TA_*_LIMIT, FB_W/R_SOF extents).
+static void cartlog_vram_profile()
+{
+	const u32 size = VRAM_SIZE, BUCK = 0x40000;   // 256 KB buckets (64 for Naomi's 16 MB)
+	u32 hist[64] = {0}, nb = size / BUCK;
+	if (nb > 64) nb = 64;
+	u32 high = 0, nz = 0, nz_below8m = 0;
+	for (u32 i = 0; i < size; i++)
+		if (vram[i]) {
+			nz++; high = i + 1;
+			if (i < 0x800000) nz_below8m++;
+			u32 b = i / BUCK; if (b < 64) hist[b]++;
+		}
+	cartlog("VRAMPROFILE high=%x nz=%x nz_below8m=%x nz_above8m=%x size=%x\n",
+			high, nz, nz_below8m, nz - nz_below8m, size);
+	char line[576]; int p = 0;
+	for (u32 b = 0; b < nb; b++)
+		p += snprintf(line + p, sizeof(line) - p, "%x ", hist[b]);
+	cartlog("VRAMHIST %s\n", line);   // nz-byte count per 256 KB bucket (bucket 32+ = past 8 MB)
+	cartlog("VRAMREGS isp_base=%x isp_limit=%x ol_base=%x ol_limit=%x fb_w_sof1=%x fb_w_sof2=%x fb_r_sof1=%x\n",
+			TA_ISP_BASE & VRAM_MASK, TA_ISP_LIMIT & VRAM_MASK,
+			TA_OL_BASE & VRAM_MASK, TA_OL_LIMIT & VRAM_MASK,
+			FB_W_SOF1 & VRAM_MASK, FB_W_SOF2 & VRAM_MASK, FB_R_SOF1 & VRAM_MASK);
+}
+
 // Phase 4 (Task 4, V2) instrumentation: any-write detector for the planned shim
 // home, phys 0x0cfc0000-0x0cffffff (== mem_b offset 0x00fc0000-0x00ffffff).
 // ponytail: this is a content scan, not a live write-intercept -- the arm64
@@ -265,6 +302,11 @@ static void Naomi_DmaStart(u32 addr, u32 data)
 			aram_zeroed = true;
 			aica::aica_ram.zero();
 			cartlog("ARAMHANDOFF zeroed size=%x\n", ARAM_SIZE);
+			// Phase 5: same baseline for VRAM (see cartlog_vram_profile). Texture
+			// uploads can't precede the game's first asset fetch; only the BIOS
+			// boot screen is lost.
+			vram.zero();
+			cartlog("VRAMHANDOFF zeroed size=%x\n", VRAM_SIZE);
 		}
 		static u32 cartlog_dma_count = 0;
 		if ((cartlog_dma_count++ & 63) == 0)   // ponytail: every 64th DMA; the scan is cheap but not free
@@ -272,6 +314,7 @@ static void Naomi_DmaStart(u32 addr, u32 data)
 			cartlog_watermarks();
 			cartlog_shimwatch();   // Phase 4 (Task 4, V2): shim-home content scan, same cadence
 			cartlog_aram_profile();   // Phase 5: sound-RAM fit (write-truth, post-handoff)
+			cartlog_vram_profile();   // Phase 5: VRAM fit (write-truth, post-handoff)
 		}
 		verify(1 == SB_GDDIR);
 		SB_GDST = 1;
