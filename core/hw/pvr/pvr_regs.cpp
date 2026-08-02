@@ -167,7 +167,7 @@ void pvr_WriteReg(u32 paddr,u32 data)
 		{
 			bool vclk_div_changed = (PvrReg(addr, u32) ^ data) & (1 << 23);
 			if (PvrReg(addr, u32) != data)
-				NOTICE_LOG(PVR, "CLEO-SPG write FB_R_CTRL = %08x (was %08x, vclk_div=%d)", data, PvrReg(addr, u32), (int)((data >> 23) & 1));
+				NOTICE_LOG(PVR, "CLEO-SPG write FB_R_CTRL = %08x (was %08x, vclk_div=%d) pc=%08x pr=%08x", data, PvrReg(addr, u32), (int)((data >> 23) & 1), p_sh4rcb->cntx.pc, p_sh4rcb->cntx.pr);
 			PvrReg(addr, u32) = data;
 			if (vclk_div_changed)
 				CalculateSync();
@@ -177,6 +177,7 @@ void pvr_WriteReg(u32 paddr,u32 data)
 	case FB_R_SIZE_addr:
 		if (PvrReg(addr, u32) != data)
 		{
+			NOTICE_LOG(PVR, "CLEO-SPG write FB_R_SIZE = %08x (was %08x) pc=%08x pr=%08x", data, PvrReg(addr, u32), p_sh4rcb->cntx.pc, p_sh4rcb->cntx.pr);
 			PvrReg(addr, u32) = data;
 			fb_dirty = false;
 			check_framebuffer_write();
@@ -196,6 +197,27 @@ void pvr_WriteReg(u32 paddr,u32 data)
 	case FB_R_SOF1_addr:
 	case FB_R_SOF2_addr:
 		data &= 0x00fffffc;
+		if (PvrReg(addr, u32) != data)
+			NOTICE_LOG(PVR, "CLEO-SPG write %s = %08x (was %08x) pc=%08x pr=%08x", regName(paddr), data, PvrReg(addr, u32), p_sh4rcb->cntx.pc, p_sh4rcb->cntx.pr);
+		// CLEO-VRAMDUMP: FLYCAST_VRAMDUMP=<prefix> -> raw VRAM snapshot every
+		// 512 SOF writes (~2-4 s), max 40 files. Offline check of CPU FB paints
+		// (loadbar/HUD) that the render path never shows.
+		{
+			static const char *vd_prefix = getenv("FLYCAST_VRAMDUMP");
+			static u32 vd_count, vd_files;
+			if (vd_prefix != nullptr && ++vd_count % 512 == 0 && vd_files < 40)
+			{
+				char vd_path[512];
+				snprintf(vd_path, sizeof(vd_path), "%s-%02u.bin", vd_prefix, vd_files++);
+				FILE *vd = fopen(vd_path, "wb");
+				if (vd != nullptr)
+				{
+					fwrite(&vram[0], 1, VRAM_SIZE, vd);
+					fclose(vd);
+					NOTICE_LOG(PVR, "CLEO-VRAMDUMP %s sof1=%08x sof2=%08x fb_r_size=%08x", vd_path, FB_R_SOF1, FB_R_SOF2, FB_R_SIZE.full);
+				}
+			}
+		}
 		rend_swap_frame(data);
 		break;
 
@@ -221,6 +243,26 @@ void pvr_WriteReg(u32 paddr,u32 data)
 		break;
 
 	case VO_CONTROL_addr:
+		// CLEO-VRAMDUMP: a VO_CONTROL write from the shim (0x8cfcxxxx) is the
+		// unblank right after a loadbar/hex paint -- snapshot VRAM at exactly
+		// that moment (the paint is guaranteed present at the current base).
+		{
+			static const char *vd_prefix = getenv("FLYCAST_VRAMDUMP");
+			static u32 vd_files;
+			if (vd_prefix != nullptr && (p_sh4rcb->cntx.pc & 0xffff0000) == 0x8cfc0000 && vd_files < 20)
+			{
+				char vd_path[512];
+				snprintf(vd_path, sizeof(vd_path), "%s-shim-%02u.bin", vd_prefix, vd_files++);
+				FILE *vd = fopen(vd_path, "wb");
+				if (vd != nullptr)
+				{
+					fwrite(&vram[0], 1, VRAM_SIZE, vd);
+					fclose(vd);
+					NOTICE_LOG(PVR, "CLEO-VRAMDUMP %s (shim unblank) sof1=%08x sof2=%08x fb_r_size=%08x pc=%08x", vd_path, FB_R_SOF1, FB_R_SOF2, FB_R_SIZE.full, p_sh4rcb->cntx.pc);
+				}
+			}
+		}
+		[[fallthrough]];
 	case SPG_HBLANK_addr:
 	case SPG_VBLANK_addr:
 	case SPG_WIDTH_addr:
