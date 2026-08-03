@@ -6,6 +6,7 @@
 #include "serialize.h"
 #include "network/ggpo.h"
 #include "hw/pvr/Renderer_if.h"
+#include "hw/naomi/cartlog.h"
 #include "stdclass.h"
 #include <array>
 
@@ -163,6 +164,7 @@ static int spg_line_sched(int tag, int cycles, int jitter, void *arg)
 				SPG_STATUS.fieldnum = 0;
 
 			rend_vblank();
+			cartlog_profiles_tick();   // Cleopatra v4: periodic ARAM/VRAM sample (naomi.cpp)
 
 			u64 now = getTimeMs();
 			cpu_time_idx = (cpu_time_idx + 1) % cpu_cycles.size();

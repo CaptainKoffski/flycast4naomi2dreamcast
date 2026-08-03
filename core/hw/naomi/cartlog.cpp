@@ -5,6 +5,12 @@
 #include <cstdlib>
 #include <cstdarg>
 
+bool cartlog_enabled()
+{
+	static const bool on = getenv("FLYCAST_CARTLOG") != nullptr;
+	return on;
+}
+
 void cartlog(const char *fmt, ...)
 {
 	static FILE *f = nullptr;

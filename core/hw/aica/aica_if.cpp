@@ -13,6 +13,7 @@
 #include "profiler/dc_profiler.h"
 #include "hw/sh4/dyna/blockmanager.h"
 #include "hw/arm7/arm7.h"
+#include "hw/naomi/cartlog.h"
 #include "cfg/option.h"
 
 #include "serialize.h"
@@ -155,6 +156,8 @@ void writeAicaReg(u32 addr, T data)
 			ARMRST = data;
 			NOTICE_LOG(AICA_ARM, "CLEO-ARMRST = %02X ram0=%08x ram4=%08x", ARMRST,
 					*(u32 *)&aica_ram[0], *(u32 *)&aica_ram[4]);
+			if (ARMRST & 1)
+				cartlog_aram_rebaseline();   // v4: sound-driver upload boundary (see naomi.cpp)
 			ArmSetRST();
 			return;
 		case 0x2C01:
@@ -171,6 +174,8 @@ void writeAicaReg(u32 addr, T data)
 		ARMRST = data & 0xFF;
 		NOTICE_LOG(AICA_ARM, "CLEO-ARMRST(w) VREG=%02X ARMRST=%02X ram0=%08x ram4=%08x", VREG, ARMRST,
 				*(u32 *)&aica_ram[0], *(u32 *)&aica_ram[4]);
+		if (ARMRST & 1)
+			cartlog_aram_rebaseline();   // v4: sound-driver upload boundary (see naomi.cpp)
 		ArmSetRST();
 		return;
 	}

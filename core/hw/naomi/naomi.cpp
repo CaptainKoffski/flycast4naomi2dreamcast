@@ -199,14 +199,29 @@ static void cartlog_aram_profile()
 	u32 hist[32] = {0}, nb = size / BUCK;
 	if (nb > 32) nb = 32;
 	u32 high = 0, nz = 0, nz_below2m = 0;
-	for (u32 i = 0; i < size; i++)
-		if (ram[i] != (base != nullptr ? base[i] : 0)) {
-			nz++; high = i + 1;
-			if (i < 0x200000) nz_below2m++;
-			u32 b = i / BUCK; if (b < 32) hist[b]++;
-		}
-	cartlog("ARAMPROFILE high=%x nz=%x nz_below2m=%x nz_above2m=%x size=%x\n",
-			high, nz, nz_below2m, nz - nz_below2m, size);
+	u32 chigh = 0, cnz = 0, cnz_below2m = 0;
+	for (u32 i = 0; i < size; i += 16) {
+		// v4 content counters: the interior of a run of identical 16-byte blocks
+		// is never sound content — the GD DIMM firmware sweeps unused ARAM with a
+		// repeating 4-byte "DMPD" tag (ikaruga dump 2026-08-04: the entire upper
+		// 6 MB was one repeated block; the raw diff counted it all as usage and
+		// G3-parked ten families), and silence is runs of zeros. Real audio data
+		// essentially never repeats adjacent 16-byte blocks; the first block of
+		// each run still counts, so the undercount is one block per run.
+		bool dup = i >= 16 && memcmp(ram + i, ram + i - 16, 16) == 0;
+		for (u32 j = i; j < i + 16; j++)
+			if (ram[j] != (base != nullptr ? base[j] : 0)) {
+				nz++; high = j + 1;
+				if (j < 0x200000) nz_below2m++;
+				u32 b = j / BUCK; if (b < 32) hist[b]++;
+				if (!dup) {
+					cnz++; chigh = j + 1;
+					if (j < 0x200000) cnz_below2m++;
+				}
+			}
+	}
+	cartlog("ARAMPROFILE high=%x nz=%x nz_below2m=%x nz_above2m=%x content_high=%x content_below2m=%x content_above2m=%x size=%x\n",
+			high, nz, nz_below2m, nz - nz_below2m, chigh, cnz_below2m, cnz - cnz_below2m, size);
 	char line[288]; int p = 0;
 	for (u32 b = 0; b < nb; b++)
 		p += snprintf(line + p, sizeof(line) - p, "%x ", hist[b]);
@@ -280,6 +295,56 @@ static void cartlog_shimwatch()
 	}
 }
 
+static void cartlog_sample()
+{
+	cartlog_watermarks();
+	cartlog_shimwatch();   // Phase 4 (Task 4, V2): shim-home content scan, same cadence
+	cartlog_aram_profile();   // Phase 5: sound-RAM fit (write-truth, post-handoff)
+	cartlog_vram_profile();   // Phase 5: VRAM fit (write-truth, post-handoff)
+	// v4 diagnostics: raw ARAM snapshot, overwritten each sample — ground truth for
+	// "is the above-cap diff real sound content or an init-fill sweep" (2026-08-04)
+	if (const char *dump = getenv("FLYCAST_ARAMDUMP")) {
+		if (FILE *df = fopen(dump, "wb")) {
+			fwrite(&aica::aica_ram[0], 1, ARAM_SIZE, df);
+			fclose(df);
+		}
+	}
+}
+
+// v4 (2026-08-04): the Naomi BIOS sound-RAM test sweeps all 8 MB with a nonzero
+// pattern, and on many titles that sweep lands AFTER the first cart DMA — a
+// first-DMA baseline then counts test residue as game sound usage forever
+// (ikaruga/ausfache cohort: exactly 0x600000 changed bytes above the DC cap,
+// byte-identical across the v2-zeroing and v3-snapshot semantics). Every AICA
+// ARM reset assert re-snapshots the baseline: the game's own sound-driver
+// upload is the last assert before steady state, so the final baseline lands
+// after the BIOS sweep. parse_capture restarts its ARAM running-max at the
+// last ARAMREBASE marker.
+// ponytail: a title that never uploads its own ARM driver keeps the polluted
+// baseline — shows up as that exact-0x600000 signature; none observed yet.
+void cartlog_aram_rebaseline()
+{
+	if (!cartlog_enabled() || !settings.platform.isNaomi())
+		return;
+	if (cartlog_aram_base == nullptr)
+		cartlog_aram_base = new u8[ARAM_SIZE];
+	memcpy(cartlog_aram_base, &aica::aica_ram[0], ARAM_SIZE);
+	cartlog("ARAMREBASE armrst size=%x\n", ARAM_SIZE);
+}
+
+// v4 (2026-08-04): cart-DMA-only sampling misses titles that stop DMAing once
+// loaded — ikaruga's steady state was never sampled and its full-window run
+// parsed as no-render. One sample every 600 vblanks (~10 s).
+void cartlog_profiles_tick()
+{
+	if (cartlog_aram_base == nullptr || !cartlog_enabled())   // null until first cart DMA => Naomi game only
+		return;
+	static u32 vblanks = 0;
+	if (++vblanks % 600 != 0)
+		return;
+	cartlog_sample();
+}
+
 //Dma Start
 static void Naomi_DmaStart(u32 addr, u32 data)
 {
@@ -305,8 +370,15 @@ static void Naomi_DmaStart(u32 addr, u32 data)
 		// zeroed the guest arrays here and that broke rendering for every
 		// no-render-class title (moeru A/B 2026-08-03) — guest state must never
 		// be mutated by instrumentation.
-		if (cartlog_aram_base == nullptr) {
-			cartlog_aram_base = new u8[ARAM_SIZE];
+		// v4: guards split — a pre-DMA ARM reset (BIOS jingle) may have allocated
+		// the ARAM baseline already via cartlog_aram_rebaseline; the first-DMA
+		// snapshot below still refreshes it and the ARAMHANDOFF marker still
+		// fires exactly once (the harness keys its handoff detection on it).
+		static bool cartlog_handoff_logged = false;
+		if (!cartlog_handoff_logged) {
+			cartlog_handoff_logged = true;
+			if (cartlog_aram_base == nullptr)
+				cartlog_aram_base = new u8[ARAM_SIZE];
 			memcpy(cartlog_aram_base, &aica::aica_ram[0], ARAM_SIZE);
 			cartlog("ARAMHANDOFF baselined size=%x\n", ARAM_SIZE);
 			cartlog_vram_base = new u8[VRAM_SIZE];
@@ -315,12 +387,7 @@ static void Naomi_DmaStart(u32 addr, u32 data)
 		}
 		static u32 cartlog_dma_count = 0;
 		if ((cartlog_dma_count++ & 63) == 0)   // ponytail: every 64th DMA; the scan is cheap but not free
-		{
-			cartlog_watermarks();
-			cartlog_shimwatch();   // Phase 4 (Task 4, V2): shim-home content scan, same cadence
-			cartlog_aram_profile();   // Phase 5: sound-RAM fit (write-truth, post-handoff)
-			cartlog_vram_profile();   // Phase 5: VRAM fit (write-truth, post-handoff)
-		}
+			cartlog_sample();
 		verify(1 == SB_GDDIR);
 		SB_GDST = 1;
 		SB_GDSTARD = SB_GDSTAR & 0x1FFFFFE0;
