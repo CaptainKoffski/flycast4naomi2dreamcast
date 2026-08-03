@@ -44,6 +44,7 @@
 #include "hw/pvr/pvr_regs.h"   // Phase 5: TA/FB layout regs for the VRAM profile
 #include "hw/aica/aica_if.h"
 #include <cstdio>              // Phase 5: snprintf for the ARAM histogram line
+#include <cstring>             // memcpy (handoff write-truth baselines)
 
 #include <memory>
 #include <algorithm>
@@ -180,21 +181,26 @@ static void cartlog_watermarks()
 // Phase 5 (sound-RAM fit, naomi-vs-dreamcast §1): ARAM write-truth profile. The
 // backwards content scan (WATERMARK) can't tell a real game write from a stale
 // or BIOS byte -- it pegged ARAM at the exact 8 MB top => "inconclusive"
-// (phase2-measurements.md). Fix: zero ARAM once at game handoff (first cart DMA;
-// cart DMAs land in MAIN RAM, sound reaches ARAM only later via G2/AICA DMA, so
-// nothing is lost), after which any non-zero byte is a genuine game/AICA sound
-// write. Report the true high-water + non-zero counts below/above DC's 2 MB, plus
-// a 256 KB-bucket histogram so a lone stray write is distinguishable from dense
+// (phase2-measurements.md). Fix: snapshot ARAM once at game handoff (first cart
+// DMA) and count bytes that DIFFER from that baseline -- a genuine game/AICA
+// sound write. (v1 zeroed ARAM/VRAM instead; that guest-visible mutation broke
+// rendering for the whole no-render class -- moeru A/B 2026-08-03. Diff against
+// a host-side copy measures the same thing without touching guest state. Blind
+// spot: a write of the identical byte value isn't counted -- acceptable.)
+// Report the true high-water + changed counts below/above DC's 2 MB, plus a
+// 256 KB-bucket histogram so a lone stray write is distinguishable from dense
 // usage. Directly answers: does the game's sound data fit DC's 2 MB ARAM?
+static u8 *cartlog_aram_base, *cartlog_vram_base;   // handoff baselines (host-only)
 static void cartlog_aram_profile()
 {
 	const u8 *ram = &aica::aica_ram[0];
+	const u8 *base = cartlog_aram_base;
 	const u32 size = ARAM_SIZE, BUCK = 0x40000;   // 256 KB buckets
 	u32 hist[32] = {0}, nb = size / BUCK;
 	if (nb > 32) nb = 32;
 	u32 high = 0, nz = 0, nz_below2m = 0;
 	for (u32 i = 0; i < size; i++)
-		if (ram[i]) {
+		if (ram[i] != (base != nullptr ? base[i] : 0)) {
 			nz++; high = i + 1;
 			if (i < 0x200000) nz_below2m++;
 			u32 b = i / BUCK; if (b < 32) hist[b]++;
@@ -207,13 +213,12 @@ static void cartlog_aram_profile()
 	cartlog("ARAMHIST %s\n", line);   // nz-byte count per 256 KB bucket (bucket 8+ = past 2 MB)
 }
 
-// Phase 5 (VRAM fit): write-truth profile, same method as cartlog_aram_profile
-// above. The 9.2 MB WATERMARK figure came from the never-cleared content scan --
-// stale BIOS/boot bytes count toward it. Fix: zero VRAM once at game handoff
-// (first cart DMA; the game's texture uploads can only start after its first
-// asset fetch, and the BIOS boot screen is expendable), after which every
-// non-zero byte is a genuine post-handoff write. Report true high-water +
-// non-zero counts below/above DC's 8 MB + a 256 KB-bucket histogram.
+// Phase 5 (VRAM fit): write-truth profile, same diff-vs-baseline method as
+// cartlog_aram_profile above (see the v1-zeroing note there). The 9.2 MB
+// WATERMARK figure came from the never-cleared content scan -- stale BIOS/boot
+// bytes count toward it; diffing against the handoff snapshot excludes them.
+// Report true high-water + changed counts below/above DC's 8 MB + a 256
+// KB-bucket histogram.
 // Blind spot: in Flycast the TA parses display lists into host-side structures
 // and rendering happens on the host GPU, so ISP/OL buffers and framebuffers
 // never appear as vram-array content (on real HW they occupy VRAM). VRAMREGS
@@ -221,12 +226,13 @@ static void cartlog_aram_profile()
 // max(content high-water, TA_*_LIMIT, FB_W/R_SOF extents).
 static void cartlog_vram_profile()
 {
+	const u8 *base = cartlog_vram_base;
 	const u32 size = VRAM_SIZE, BUCK = 0x40000;   // 256 KB buckets (64 for Naomi's 16 MB)
 	u32 hist[64] = {0}, nb = size / BUCK;
 	if (nb > 64) nb = 64;
 	u32 high = 0, nz = 0, nz_below8m = 0;
 	for (u32 i = 0; i < size; i++)
-		if (vram[i]) {
+		if (vram[i] != (base != nullptr ? base[i] : 0)) {
 			nz++; high = i + 1;
 			if (i < 0x800000) nz_below8m++;
 			u32 b = i / BUCK; if (b < 64) hist[b]++;
@@ -294,19 +300,18 @@ static void Naomi_DmaStart(u32 addr, u32 data)
 		cartlog("CARTDMA src=%08x dest=%08x len=%x\n",
 				CurrentCartridge->GetDmaSrcOffset(), SB_GDSTAR & 0x1FFFFFE0, SB_GDLEN);
 		cartlog("CARTDMAPC pc=%08x sp=%08x\n", Sh4cntx.pc, Sh4cntx.r[15]);   // Phase 3: guest PC/SP at DMA kick
-		// Phase 5: baseline ARAM at game handoff so cartlog_aram_profile measures
-		// only genuine game/AICA sound writes (see that fn). First cart DMA = game's
-		// first asset fetch; ARAM is still pre-game here (cart DMAs target main RAM).
-		static bool aram_zeroed = false;
-		if (!aram_zeroed) {
-			aram_zeroed = true;
-			aica::aica_ram.zero();
-			cartlog("ARAMHANDOFF zeroed size=%x\n", ARAM_SIZE);
-			// Phase 5: same baseline for VRAM (see cartlog_vram_profile). Texture
-			// uploads can't precede the game's first asset fetch; only the BIOS
-			// boot screen is lost.
-			vram.zero();
-			cartlog("VRAMHANDOFF zeroed size=%x\n", VRAM_SIZE);
+		// Phase 5: baseline ARAM/VRAM at game handoff so the write-truth profiles
+		// count only post-handoff writes. Host-side SNAPSHOT, not a zero: v1
+		// zeroed the guest arrays here and that broke rendering for every
+		// no-render-class title (moeru A/B 2026-08-03) — guest state must never
+		// be mutated by instrumentation.
+		if (cartlog_aram_base == nullptr) {
+			cartlog_aram_base = new u8[ARAM_SIZE];
+			memcpy(cartlog_aram_base, &aica::aica_ram[0], ARAM_SIZE);
+			cartlog("ARAMHANDOFF baselined size=%x\n", ARAM_SIZE);
+			cartlog_vram_base = new u8[VRAM_SIZE];
+			memcpy(cartlog_vram_base, &vram[0], VRAM_SIZE);
+			cartlog("VRAMHANDOFF baselined size=%x\n", VRAM_SIZE);
 		}
 		static u32 cartlog_dma_count = 0;
 		if ((cartlog_dma_count++ & 63) == 0)   // ponytail: every 64th DMA; the scan is cheap but not free

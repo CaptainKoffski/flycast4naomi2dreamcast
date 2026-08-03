@@ -197,8 +197,10 @@ void pvr_WriteReg(u32 paddr,u32 data)
 	case FB_R_SOF1_addr:
 	case FB_R_SOF2_addr:
 		data &= 0x00fffffc;
+		// DEBUG_LOG: a double-buffered game flips SOF every vblank, so at NOTICE
+		// this was ~120 syslog lines/s for the whole run (macOS NSLog is not free)
 		if (PvrReg(addr, u32) != data)
-			NOTICE_LOG(PVR, "CLEO-SPG write %s = %08x (was %08x) pc=%08x pr=%08x", regName(paddr), data, PvrReg(addr, u32), p_sh4rcb->cntx.pc, p_sh4rcb->cntx.pr);
+			DEBUG_LOG(PVR, "CLEO-SPG write %s = %08x (was %08x) pc=%08x pr=%08x", regName(paddr), data, PvrReg(addr, u32), p_sh4rcb->cntx.pc, p_sh4rcb->cntx.pr);
 		// CLEO-VRAMDUMP: FLYCAST_VRAMDUMP=<prefix> -> raw VRAM snapshot every
 		// 512 SOF writes (~2-4 s), max 40 files. Offline check of CPU FB paints
 		// (loadbar/HUD) that the render path never shows.

@@ -8,6 +8,7 @@
 #include "oslib/oslib.h"
 #include "oslib/virtmem.h"
 #include <cassert>
+#include <cstdlib>   // getenv (FLYCAST_HWLOG gate)
 
 namespace addrspace
 {
@@ -110,6 +111,13 @@ void *writeConst(u32 addr, bool& ismem, u32 sz)
 // (interpreter advances ctx->pc to insn+2 before ExecuteOpcode).
 static inline void cartlog_hwaccess(char rw, u32 addr, u32 val)
 {
+	// Opt-in via FLYCAST_HWLOG: the consecutive-dup collapse below misses
+	// alternating access pairs (A,B,A,B...), which flooded battery runs at
+	// ~230 MB/min of fflushed log (ENOSPC at family 18) while slowing the emu
+	// thread. The battery parser never consumes HW lines — debug tool only.
+	static const bool hwlog = getenv("FLYCAST_HWLOG") != nullptr;
+	if (!hwlog)
+		return;
 	const u32 pc = Sh4cntx.pc;
 	// Only the ported game's own code (post-handoff), matched by PHYSICAL pc so
 	// both the P1 (0x8c02xxxx) and P2/uncached (0xac02xxxx) aliases count -- the
@@ -136,6 +144,9 @@ static inline void cartlog_hwaccess(char rw, u32 addr, u32 val)
 // the string can be traced. Dedup by reading PC so each site logs once.
 static inline void cartlog_strwatch(u32 addr)
 {
+	static const bool hwlog = getenv("FLYCAST_HWLOG") != nullptr;   // see cartlog_hwaccess
+	if (!hwlog)
+		return;
 	const u32 pa = addr & 0x1fffffff;
 	if (pa < 0x0c0ca6dc || pa >= 0x0c0ca740)
 		return;
