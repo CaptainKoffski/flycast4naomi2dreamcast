@@ -690,21 +690,31 @@ bool BaseTextureCacheData::Update()
 		// (cleopatra scripts/extract_dancer.py). The PNG alone is decoded --
 		// useless for byte-matching against the cart image.
 		{
-			u32 texaddr = (tcw.TexAddr << 3) & VRAM_MASK;
-			int tw = 8 << tsp.TexU, th = 8 << tsp.TexV;
-			NOTICE_LOG(RENDERER, "CLEO-TEX hash=%08x addr=%08x size=%x tcw=%08x tsp=%08x w=%d h=%d",
-					texture_hash, texaddr, size, tcw.full, tsp.full, tw, th);
+			// Full stored footprint as it appears in the cart: [startAddress, mmStartAddress + size).
+			// startAddress is the codebook start for VQ / the mip-chain start for mipmapped (plain
+			// data start otherwise); mmStartAddress skips past whichever of those precede the
+			// top-level data (see the mmStartAddress adjustments a few dozen lines above, in the
+			// ctor). This span covers codebook+indices for VQ and the full mip chain for mipmapped
+			// -- both address and mmStartAddress are already the class's own members, no need to
+			// recompute. width/height (not 8<<tsp.TexU/V) because MipMapped textures get height
+			// square-corrected to width in the ctor (TexV is ignored for those).
+			u32 dumpLen = mmStartAddress - startAddress + size;
+			NOTICE_LOG(RENDERER, "CLEO-TEX hash=%08x addr=%08x size=%x tcw=%08x tsp=%08x w=%d h=%d vq=%d mip=%d",
+					texture_hash, startAddress, dumpLen, tcw.full, tsp.full, width, height,
+					(int)tcw.VQ_Comp, (int)tcw.MipMapped);
 			if (const char *dir = getenv("FLYCAST_TEXRAW"))
 			{
 				char p[512];
 				snprintf(p, sizeof p, "%s/%08x.raw", dir, texture_hash);
 				FILE *f = fopen(p, "wb");
-				if (f) { fwrite(&vram[texaddr], 1, size, f); fclose(f); }
+				if (f) { fwrite(&vram[startAddress], 1, dumpLen, f); fclose(f); }
+				else WARN_LOG(RENDERER, "CLEO-TEX: fopen failed for %s", p);
 				if (tcw.PixelFmt == PixelPal4 || tcw.PixelFmt == PixelPal8)
 				{
 					snprintf(p, sizeof p, "%s/%08x.pal", dir, texture_hash);
 					f = fopen(p, "wb");
 					if (f) { fwrite(PALETTE_RAM, 4, 1024, f); fclose(f); }
+					else WARN_LOG(RENDERER, "CLEO-TEX: fopen failed for %s", p);
 				}
 			}
 		}
