@@ -251,7 +251,11 @@ void pvr_WriteReg(u32 paddr,u32 data)
 		{
 			static const char *vd_prefix = getenv("FLYCAST_VRAMDUMP");
 			static u32 vd_files;
-			if (vd_prefix != nullptr && (p_sh4rcb->cntx.pc & 0xffff0000) == 0x8cfc0000 && vd_files < 20)
+			// loadscreen-dancer-animation final-review residue re-verification
+			// (2026-08-04): 20 was too small a capture window to reach the
+			// pose-3->4 phrase transition (step 9, ~72 ticks in) -- raised to
+			// 400 (docs/kb/tooling.md).
+			if (vd_prefix != nullptr && (p_sh4rcb->cntx.pc & 0xffff0000) == 0x8cfc0000 && vd_files < 400)
 			{
 				char vd_path[512];
 				snprintf(vd_path, sizeof(vd_path), "%s-shim-%02u.bin", vd_prefix, vd_files++);
