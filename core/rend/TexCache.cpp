@@ -685,6 +685,29 @@ bool BaseTextureCacheData::Update()
 		ComputeHash();
 		custom_texture.dumpTexture(this, upscaled_w, upscaled_h, temp_tex_buffer);
 		NOTICE_LOG(RENDERER, "Dumped texture %x.png. Old hash %x", texture_hash, old_texture_hash);
+
+		// CLEO-TEX: raw texture bytes + metadata for the cart-locator pipeline
+		// (cleopatra scripts/extract_dancer.py). The PNG alone is decoded --
+		// useless for byte-matching against the cart image.
+		{
+			u32 texaddr = (tcw.TexAddr << 3) & VRAM_MASK;
+			int tw = 8 << tsp.TexU, th = 8 << tsp.TexV;
+			NOTICE_LOG(RENDERER, "CLEO-TEX hash=%08x addr=%08x size=%x tcw=%08x tsp=%08x w=%d h=%d",
+					texture_hash, texaddr, size, tcw.full, tsp.full, tw, th);
+			if (const char *dir = getenv("FLYCAST_TEXRAW"))
+			{
+				char p[512];
+				snprintf(p, sizeof p, "%s/%08x.raw", dir, texture_hash);
+				FILE *f = fopen(p, "wb");
+				if (f) { fwrite(&vram[texaddr], 1, size, f); fclose(f); }
+				if (tcw.PixelFmt == PixelPal4 || tcw.PixelFmt == PixelPal8)
+				{
+					snprintf(p, sizeof p, "%s/%08x.pal", dir, texture_hash);
+					f = fopen(p, "wb");
+					if (f) { fwrite(PALETTE_RAM, 4, 1024, f); fclose(f); }
+				}
+			}
+		}
 	}
 	PrintTextureName();
 	// Restore the original texture size if it was constrained to VRAM limits above
