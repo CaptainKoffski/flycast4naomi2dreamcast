@@ -953,6 +953,7 @@ u32 NaomiCartridge::ReadMem(u32 address, u32 size)
 			Read(RomPioOffset, 2, &rv);
 			if (RomPioAutoIncrement)
 				RomPioOffset += 2;
+			cartlog_pio_read(2);   // v6: PIO load accounting + bulk-transfer handoff trigger
 
 			return rv;
 		}

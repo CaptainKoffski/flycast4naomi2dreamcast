@@ -190,7 +190,7 @@ static void cartlog_watermarks()
 // Report the true high-water + changed counts below/above DC's 2 MB, plus a
 // 256 KB-bucket histogram so a lone stray write is distinguishable from dense
 // usage. Directly answers: does the game's sound data fit DC's 2 MB ARAM?
-static u8 *cartlog_aram_base, *cartlog_vram_base;   // handoff baselines (host-only)
+static u8 *cartlog_aram_base, *cartlog_vram_base, *cartlog_main_base;   // handoff baselines (host-only)
 static void cartlog_aram_profile()
 {
 	const u8 *ram = &aica::aica_ram[0];
@@ -264,6 +264,82 @@ static void cartlog_vram_profile()
 			FB_W_SOF1 & VRAM_MASK, FB_W_SOF2 & VRAM_MASK, FB_R_SOF1 & VRAM_MASK);
 }
 
+// v6 (2026-08-06): main-RAM write-truth. The v1 metric (CARTDMA dest
+// high-water) is blind on PIO-loading carts (sgtetris: zero DMA tags despite
+// visibly running; gwing2: dma_high_water 0 with 1,344 non-main DMAs — kb
+// §4.v) and misses CPU-written data above the last DMA'd asset (spec v1
+// limitation). Same diff-vs-handoff-baseline method as cartlog_vram_profile:
+// 32 MB Naomi window, counts split at DC's 16 MB cap. Raw diff only — no
+// ARAM-style content dedup; no fill artifact is known for main, and kb §8
+// discipline adds exclusion signatures only when a control run proves one.
+static void cartlog_main_profile()
+{
+	const u8 *base = cartlog_main_base;
+	if (base == nullptr)
+		return;   // kb §9: a diff is only as meaningful as its baseline — never emit a vs-zero sample
+	const u32 size = RAM_SIZE, BUCK = 0x40000;   // 256 KB buckets (128 for Naomi's 32 MB)
+	u32 hist[128] = {0}, nb = size / BUCK;
+	if (nb > 128) nb = 128;
+	u32 high = 0, nz = 0, nz_below16m = 0;
+	for (u32 i = 0; i < size; i++)
+		if (mem_b[i] != base[i]) {
+			nz++; high = i + 1;
+			if (i < 0x1000000) nz_below16m++;
+			u32 b = i / BUCK; if (b < 128) hist[b]++;
+		}
+	cartlog("MAINPROFILE high=%x nz=%x nz_below16m=%x nz_above16m=%x size=%x\n",
+			high, nz, nz_below16m, nz - nz_below16m, size);
+	char line[1280]; int p = 0;
+	for (u32 b = 0; b < nb; b++)
+		p += snprintf(line + p, sizeof(line) - p, "%x ", hist[b]);
+	cartlog("MAINHIST %s\n", line);   // nz-byte count per 256 KB bucket (bucket 64+ = past 16 MB)
+}
+
+// v6: one-shot handoff baseline at the first BULK cart->RAM transfer — first
+// cart DMA, or cumulative PIO ROM_DATA reads crossing 32 KB (PIO-loading
+// carts fire no DMA at all; BIOS-era header pokes are bytes-to-KB while an
+// image load is MBs, so any threshold in that gap separates them — chocomk
+// cartlog evidence, 2026-08-06). Host-side SNAPSHOT, never a zero: v1 zeroed
+// the guest arrays and broke rendering for the whole no-render class (moeru
+// A/B 2026-08-03) — instrumentation must never mutate guest state.
+// v4 guard note still applies: a pre-DMA ARM reset (BIOS jingle) may have
+// allocated the ARAM baseline via cartlog_aram_rebaseline; the snapshot here
+// refreshes it, and each *HANDOFF marker fires exactly once (the harness
+// keys handoff detection on these markers).
+void cartlog_handoff(const char *trigger)
+{
+	if (!cartlog_enabled())
+		return;
+	static bool logged = false;
+	if (logged)
+		return;
+	logged = true;
+	if (cartlog_aram_base == nullptr)
+		cartlog_aram_base = new u8[ARAM_SIZE];
+	memcpy(cartlog_aram_base, &aica::aica_ram[0], ARAM_SIZE);
+	cartlog("ARAMHANDOFF baselined size=%x trigger=%s\n", ARAM_SIZE, trigger);
+	cartlog_vram_base = new u8[VRAM_SIZE];
+	memcpy(cartlog_vram_base, &vram[0], VRAM_SIZE);
+	cartlog("VRAMHANDOFF baselined size=%x trigger=%s\n", VRAM_SIZE, trigger);
+	cartlog_main_base = new u8[RAM_SIZE];
+	memcpy(cartlog_main_base, &mem_b[0], RAM_SIZE);
+	cartlog("MAINHANDOFF baselined size=%x trigger=%s\n", RAM_SIZE, trigger);
+}
+
+// v6: PIO ROM_DATA read accounting (called from the naomi_cart.cpp funnel).
+// Cart reads are MMIO and always route through C code — unlike RAM stores,
+// the dynarec fast path cannot bypass this (contrast cartlog_shimwatch).
+// Doubles as the PIO-loading handoff trigger and the CARTPIOCNT lower bound.
+static unsigned long long cartlog_pio_bytes;
+void cartlog_pio_read(unsigned bytes)
+{
+	if (!cartlog_enabled())
+		return;
+	cartlog_pio_bytes += bytes;
+	if (cartlog_pio_bytes >= (32 << 10))
+		cartlog_handoff("pio");
+}
+
 // Phase 4 (Task 4, V2) instrumentation: any-write detector for the planned shim
 // home, phys 0x0cfc0000-0x0cffffff (== mem_b offset 0x00fc0000-0x00ffffff).
 // ponytail: this is a content scan, not a live write-intercept -- the arm64
@@ -301,6 +377,8 @@ static void cartlog_sample()
 	cartlog_shimwatch();   // Phase 4 (Task 4, V2): shim-home content scan, same cadence
 	cartlog_aram_profile();   // Phase 5: sound-RAM fit (write-truth, post-handoff)
 	cartlog_vram_profile();   // Phase 5: VRAM fit (write-truth, post-handoff)
+	cartlog_main_profile();   // v6: main-RAM fit (write-truth, post-handoff)
+	cartlog("CARTPIOCNT bytes=%llx\n", cartlog_pio_bytes);
 	// v4 diagnostics: raw ARAM snapshot, overwritten each sample — ground truth for
 	// "is the above-cap diff real sound content or an init-fill sweep" (2026-08-04)
 	if (const char *dump = getenv("FLYCAST_ARAMDUMP")) {
@@ -365,26 +443,7 @@ static void Naomi_DmaStart(u32 addr, u32 data)
 		cartlog("CARTDMA src=%08x dest=%08x len=%x\n",
 				CurrentCartridge->GetDmaSrcOffset(), SB_GDSTAR & 0x1FFFFFE0, SB_GDLEN);
 		cartlog("CARTDMAPC pc=%08x sp=%08x\n", Sh4cntx.pc, Sh4cntx.r[15]);   // Phase 3: guest PC/SP at DMA kick
-		// Phase 5: baseline ARAM/VRAM at game handoff so the write-truth profiles
-		// count only post-handoff writes. Host-side SNAPSHOT, not a zero: v1
-		// zeroed the guest arrays here and that broke rendering for every
-		// no-render-class title (moeru A/B 2026-08-03) — guest state must never
-		// be mutated by instrumentation.
-		// v4: guards split — a pre-DMA ARM reset (BIOS jingle) may have allocated
-		// the ARAM baseline already via cartlog_aram_rebaseline; the first-DMA
-		// snapshot below still refreshes it and the ARAMHANDOFF marker still
-		// fires exactly once (the harness keys its handoff detection on it).
-		static bool cartlog_handoff_logged = false;
-		if (!cartlog_handoff_logged) {
-			cartlog_handoff_logged = true;
-			if (cartlog_aram_base == nullptr)
-				cartlog_aram_base = new u8[ARAM_SIZE];
-			memcpy(cartlog_aram_base, &aica::aica_ram[0], ARAM_SIZE);
-			cartlog("ARAMHANDOFF baselined size=%x\n", ARAM_SIZE);
-			cartlog_vram_base = new u8[VRAM_SIZE];
-			memcpy(cartlog_vram_base, &vram[0], VRAM_SIZE);
-			cartlog("VRAMHANDOFF baselined size=%x\n", VRAM_SIZE);
-		}
+		cartlog_handoff("dma");   // Phase 5/v6: one-shot 3-region baseline (see cartlog_handoff)
 		static u32 cartlog_dma_count = 0;
 		if ((cartlog_dma_count++ & 63) == 0)   // ponytail: every 64th DMA; the scan is cheap but not free
 			cartlog_sample();
