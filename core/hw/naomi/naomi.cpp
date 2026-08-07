@@ -239,21 +239,46 @@ static void cartlog_aram_profile()
 // never appear as vram-array content (on real HW they occupy VRAM). VRAMREGS
 // snapshots their layout registers instead -- the real footprint is
 // max(content high-water, TA_*_LIMIT, FB_W/R_SOF extents).
+// v8: content_* fields below mask the FB regions out (spec 2026-08-07).
 static void cartlog_vram_profile()
 {
 	const u8 *base = cartlog_vram_base;
 	const u32 size = VRAM_SIZE, BUCK = 0x40000;   // 256 KB buckets (64 for Naomi's 16 MB)
 	u32 hist[64] = {0}, nb = size / BUCK;
 	if (nb > 64) nb = 64;
+	// v8 FB masking (spec 2026-08-07-vram-fb-masking-design.md, §6 ruling 2):
+	// content_* counters exclude the framebuffer regions the CURRENT video regs
+	// point at — FB placement is the arcade build's choice, not fit-relevant
+	// content (chocomk parks its flip pair at/above the DC's 8 MB line); a DC
+	// port budgets 2 FBs separately (score-side: content + 2*fb_bytes).
+	// Sample-time regs only, no sticky union: a stale FB region left by a mode
+	// change counts as content again later — truthful-if-rare, documented.
+	// FB_W_SOF2 is usually a never-written BIOS default (31 kHz progressive
+	// parks the field-2 pointer at 0xc00000); masking it costs nothing when
+	// nothing was written there. fb_size: write-side stride (8-byte units)
+	// x display height — read/write FBs share dimensions under page flipping
+	// (read-side variant: Renderer_if.cpp fb_watch formula).
+	const u32 fb_size = (FB_R_SIZE.fb_y_size + 1) * FB_W_LINESTRIDE.stride * 8;
+	const u32 fb_sof[3] = { FB_W_SOF1 & VRAM_MASK, FB_W_SOF2 & VRAM_MASK, FB_R_SOF1 & VRAM_MASK };
 	u32 high = 0, nz = 0, nz_below8m = 0;
+	u32 chigh = 0, cnz = 0, cnz_below8m = 0, fb_masked_nz = 0;
 	for (u32 i = 0; i < size; i++)
 		if (vram[i] != (base != nullptr ? base[i] : 0)) {
 			nz++; high = i + 1;
 			if (i < 0x800000) nz_below8m++;
 			u32 b = i / BUCK; if (b < 64) hist[b]++;
+			// unsigned wrap makes (i - sof < fb_size) a one-compare range check
+			bool in_fb = (i - fb_sof[0] < fb_size) || (i - fb_sof[1] < fb_size)
+			          || (i - fb_sof[2] < fb_size);
+			if (in_fb) {
+				fb_masked_nz++;
+			} else {
+				cnz++; chigh = i + 1;
+				if (i < 0x800000) cnz_below8m++;
+			}
 		}
-	cartlog("VRAMPROFILE high=%x nz=%x nz_below8m=%x nz_above8m=%x size=%x\n",
-			high, nz, nz_below8m, nz - nz_below8m, size);
+	cartlog("VRAMPROFILE high=%x nz=%x nz_below8m=%x nz_above8m=%x content_high=%x content_below8m=%x content_above8m=%x fb_bytes=%x fb_masked_nz=%x size=%x\n",
+			high, nz, nz_below8m, nz - nz_below8m, chigh, cnz_below8m, cnz - cnz_below8m, fb_size, fb_masked_nz, size);
 	char line[576]; int p = 0;
 	for (u32 b = 0; b < nb; b++)
 		p += snprintf(line + p, sizeof(line) - p, "%x ", hist[b]);
