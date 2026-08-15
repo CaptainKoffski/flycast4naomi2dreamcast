@@ -1,6 +1,7 @@
 #include "ta.h"
 #include "ta_ctx.h"
 #include "hw/holly/holly_intc.h"
+#include "hw/naomi/cartlog.h"
 #include "pvr_mem.h"
 
 /*
@@ -224,6 +225,8 @@ static void DYNACALL ta_handle_cmd(u32 trans)
 			if (ta_fsm_cl==7)
 				ta_fsm_cl=dat->pcw.ListType;
 			//printf("List %d ended\n",ta_fsm_cl);
+			if (cartlog_enabled())
+				cartlog("TAEND cl=%d", ta_fsm_cl);
 
 			if (settings.platform.isNaomi2())
 				asic_RaiseInterruptBothCLX(ListEndInterrupt[ta_fsm_cl]);
@@ -235,7 +238,11 @@ static void DYNACALL ta_handle_cmd(u32 trans)
 		else if (dat->pcw.ParaType == ParamType_Polygon_or_Modifier_Volume)
 		{
 			if (ta_fsm_cl==7)
+			{
 				ta_fsm_cl=dat->pcw.ListType;
+				if (cartlog_enabled())
+					cartlog("TAREG cl=%d pcw=%08x", ta_fsm_cl, dat->pcw.full);
+			}
 
 			if (!IsModVolList(ta_fsm_cl))
 				trans=TAS_PLV32;

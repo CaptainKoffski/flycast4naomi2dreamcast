@@ -1,6 +1,7 @@
 #include "pvr_regs.h"
 #include "pvr_mem.h"
 #include "hw/sh4/sh4_if.h"
+#include "hw/naomi/cartlog.h"
 #include "Renderer_if.h"
 #include "ta.h"
 #include "spg.h"
@@ -121,6 +122,12 @@ void pvr_WriteReg(u32 paddr,u32 data)
 	DEBUG_LOG(PVR, "write %s.%c = %x", regName(paddr),
 			((paddr >> 26) & 7) == 2 ? 'b' : (paddr & 0x2000000) ? '1' : '0',
 					data);
+
+	// Cleopatra DreamShell round 12: TA control choreography baseline.
+	if ((addr == TA_LIST_INIT_addr || addr == TA_LIST_CONT_addr
+	     || addr == SOFTRESET_addr || addr == TA_ALLOC_CTRL_addr
+	     || addr == STARTRENDER_addr) && cartlog_enabled())
+		cartlog("PVRW %s=%08x", regName(paddr), data);
 
 	switch (addr)
 	{

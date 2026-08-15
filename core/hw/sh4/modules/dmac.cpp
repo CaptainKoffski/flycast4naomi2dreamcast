@@ -12,6 +12,7 @@
 #include "dmac.h"
 #include "hw/sh4/sh4_interrupts.h"
 #include "hw/holly/holly_intc.h"
+#include "hw/naomi/cartlog.h"
 
 DMACRegisters dmac;
 
@@ -38,6 +39,12 @@ void DMAC_Ch2St()
 	}
 
 	DEBUG_LOG(SH4, ">> DMAC: Ch2 DMA SRC=%X DST=%X LEN=%X", src, SB_C2DSTAT, SB_C2DLEN);
+
+	// Cleopatra DreamShell round 12: healthy-boot baseline of every ch2-DMA,
+	// with the first source word (= first PCW when dst is the TA FIFO).
+	if (cartlog_enabled())
+		cartlog("C2D src=%08x dst=%08x len=%x w0=%08x", src, dst, len,
+		        ReadMem32_nommu(src));
 
 	// Direct DList DMA (Ch2)
 
