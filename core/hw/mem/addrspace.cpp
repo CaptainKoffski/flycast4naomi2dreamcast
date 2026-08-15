@@ -241,6 +241,24 @@ void DYNACALL writet(u32 addr, T data)
 						pa, (int)sz, (u32)data, Sh4cntx.pc - 2, Sh4cntx.pr);
 			}
 		}
+		// DreamShell round 5: does GAME code (pc in the 1 MB image) write
+		// (a) the BIOS work area 0x100..0x10000 (isoldr's 0x8c000100
+		// placement) or (b) the top 512 KB (isoldr's high placements)?
+		// pc-filtered to game code only -- BIOS/KOS-loader writers drowned
+		// the first pass. Shim home 0x0cfc0000-0x0cfd8000 excluded (ours).
+		// Round-5 verification: the candidate isoldr placement band
+		// 0x8cf80000..0x8cfc0000 (below the shim) + the shim..top gap
+		// 0x8cfd8000..0x8cffd000 must stay untouched by ALL writers for
+		// the whole boot. Expected ~zero hits, so no cap saturation.
+		if ((pa >= 0x0cf80000 && pa < 0x0cfc0000) ||
+			(pa >= 0x0cfd8000 && pa < 0x0cffd000)) {
+			static int bandwr_lines = 0;
+			if (bandwr_lines < 30000) {
+				bandwr_lines++;
+				cartlog("BANDWR [%08x] sz=%d val=%08x pc=%08x pr=%08x\n",
+						pa, (int)sz, (u32)data, Sh4cntx.pc - 2, Sh4cntx.pr);
+			}
+		}
 	}
 	cartlog_hwaccess('W', addr, (u32)data);
 
