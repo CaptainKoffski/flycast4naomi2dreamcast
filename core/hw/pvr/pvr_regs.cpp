@@ -127,7 +127,7 @@ void pvr_WriteReg(u32 paddr,u32 data)
 	if ((addr == TA_LIST_INIT_addr || addr == TA_LIST_CONT_addr
 	     || addr == SOFTRESET_addr || addr == TA_ALLOC_CTRL_addr
 	     || addr == STARTRENDER_addr) && cartlog_enabled())
-		cartlog("PVRW %s=%08x", regName(paddr), data);
+		cartlog("PVRW %s=%08x\n", regName(paddr), data);
 
 	switch (addr)
 	{

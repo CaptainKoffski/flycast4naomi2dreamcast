@@ -226,7 +226,7 @@ static void DYNACALL ta_handle_cmd(u32 trans)
 				ta_fsm_cl=dat->pcw.ListType;
 			//printf("List %d ended\n",ta_fsm_cl);
 			if (cartlog_enabled())
-				cartlog("TAEND cl=%d", ta_fsm_cl);
+				cartlog("TAEND cl=%d\n", ta_fsm_cl);
 
 			if (settings.platform.isNaomi2())
 				asic_RaiseInterruptBothCLX(ListEndInterrupt[ta_fsm_cl]);
@@ -241,7 +241,7 @@ static void DYNACALL ta_handle_cmd(u32 trans)
 			{
 				ta_fsm_cl=dat->pcw.ListType;
 				if (cartlog_enabled())
-					cartlog("TAREG cl=%d pcw=%08x", ta_fsm_cl, dat->pcw.full);
+					cartlog("TAREG cl=%d pcw=%08x\n", ta_fsm_cl, dat->pcw.full);
 			}
 
 			if (!IsModVolList(ta_fsm_cl))

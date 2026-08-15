@@ -1208,6 +1208,22 @@ void WriteMem_gdrom(u32 Addr, u32 data, u32 sz)
 	}
 }
 
+// Cleopatra round 13: FLYCAST_GDSLOW=<N> divides the modeled GD-ROM transfer
+// rate by N, approximating the DreamShell serial-SD dongle (~100-200 KB/s)
+// where the load->title transition hang is deterministic on real hardware.
+static int gdSlowFactor()
+{
+	static int f = -1;
+	if (f < 0)
+	{
+		const char *s = getenv("FLYCAST_GDSLOW");
+		f = s ? atoi(s) : 1;
+		if (f < 1)
+			f = 1;
+	}
+	return f;
+}
+
 static int getGDROMTicks()
 {
 	if (SB_GDST & 1)
@@ -1217,11 +1233,11 @@ static int getGDROMTicks()
 		u32 len = SB_GDLEN == 0 ? 0x02000000 : SB_GDLEN;
 		if (len - SB_GDLEND > 10240)
 			// Large transfers: GD-ROM transfer rate 1.8 MB/s
-			return sh4CyclesForXfer(10240, 1'800'000);
+			return sh4CyclesForXfer(10240, 1'800'000 / gdSlowFactor());
 		else
 			// Small transfers: Max G1 bus rate: 50 MHz x 16 bits
 			// ...slowed down to 25 MB/s for wsb2k2
-			return sh4CyclesForXfer(std::min<u32>(10240, len - SB_GDLEND), 25'000'000);
+			return sh4CyclesForXfer(std::min<u32>(10240, len - SB_GDLEND), 25'000'000 / gdSlowFactor());
 	}
 	else
 		return 0;

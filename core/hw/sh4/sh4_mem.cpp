@@ -11,6 +11,7 @@
 #include "hw/pvr/pvr_mem.h"
 #include "hw/mem/addrspace.h"
 #include "hw/sh4/modules/mmu.h"
+#include "hw/naomi/cartlog.h"
 #include "cfg/option.h"
 
 #ifdef STRICT_MODE
@@ -259,6 +260,17 @@ void WriteMemBlock_nommu_ptr(u32 dst, const u32 *src, u32 size)
 
 void WriteMemBlock_nommu_sq(u32 dst, const SQBuffer *src)
 {
+	// Round 13 (Cleopatra): SQ flushes bypass addrspace::writet, so the closer
+	// buffer watches there would miss an SQ-based display-list emitter. Same
+	// three ranges as the writet watches.
+	{
+		u32 pa = dst & 0x1fffffff;
+		if ((pa >= 0x0cb80000 && pa < 0x0cb80040) ||
+			(pa >= 0x0c0cf240 && pa < 0x0c0cf260) ||
+			(pa >= 0x0cb54540 && pa < 0x0cb54580))
+			cartlog("SQWR dst=%08x w0=%08x w1=%08x\n", dst,
+					*(const u32 *)&src->data[0], *(const u32 *)&src->data[4]);
+	}
 	// destination address is 32-byte aligned
 	SQBuffer *pdst = (SQBuffer *)GetMemPtr(dst, sizeof(SQBuffer));
 	if (pdst != nullptr)

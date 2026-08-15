@@ -43,8 +43,14 @@ void DMAC_Ch2St()
 	// Cleopatra DreamShell round 12: healthy-boot baseline of every ch2-DMA,
 	// with the first source word (= first PCW when dst is the TA FIFO).
 	if (cartlog_enabled())
-		cartlog("C2D src=%08x dst=%08x len=%x w0=%08x", src, dst, len,
+	{
+		cartlog("C2D src=%08x dst=%08x len=%x w0=%08x\n", src, dst, len,
 		        ReadMem32_nommu(src));
+		// Round 13: the load->title transition pins on this transfer; dump the
+		// buffered transfer-queue slot writes so the submit path is visible.
+		if ((src & 0x1fffffff) == 0x0cb80000)
+			cartlog_ringdump("transition-c2d");
+	}
 
 	// Direct DList DMA (Ch2)
 

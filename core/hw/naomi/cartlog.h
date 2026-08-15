@@ -9,3 +9,6 @@ void cartlog_profiles_tick();     // periodic ARAM/VRAM profile sample; call onc
 // naomi.cpp — v6 main-RAM write-truth (2026-08-06):
 void cartlog_handoff(const char *trigger);   // one-shot ARAM/VRAM/MAIN baseline; trigger = "dma" | "pio"
 void cartlog_pio_read(unsigned bytes);       // ROM_DATA PIO accounting; fires cartlog_handoff("pio") at 32 KB
+// round 13 — transfer-queue slot-write history (2026-08-16):
+void cartlog_ringnote(unsigned pa, unsigned val, unsigned pc, unsigned pr, int sz);
+void cartlog_ringdump(const char *why);      // print buffered slot writes, oldest first

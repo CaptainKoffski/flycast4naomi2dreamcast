@@ -259,6 +259,33 @@ void DYNACALL writet(u32 addr, T data)
 						pa, (int)sz, (u32)data, Sh4cntx.pc - 2, Sh4cntx.pr);
 			}
 		}
+		// Round 13: the load->title transition pins on the transfer-queue slot
+		// for the modifier-list closer at 0x0cb80000 whose content is all
+		// zeros (expected [8100xxxx global][EOL]). Watch every CPU store into
+		// the two transition closer buffers (used once -- low volume), keep a
+		// slot-write history for the two ring slots involved (dumped from
+		// DMAC_Ch2St when the transition C2D fires), and cap-watch one
+		// load-frame modifier closer as a control to identify the healthy
+		// emitter's PC.
+		if (pa >= 0x0c0fb920 && pa < 0x0c0fb9a0)
+			cartlog_ringnote(pa, (u32)data, Sh4cntx.pc - 2, Sh4cntx.pr, (int)sz);
+		if ((pa >= 0x0cb80000 && pa < 0x0cb80040) ||
+			(pa >= 0x0c0cf240 && pa < 0x0c0cf260)) {
+			static int closer_lines = 0;
+			if (closer_lines < 2000) {
+				closer_lines++;
+				cartlog("CLOSERWR [%08x] sz=%d val=%08x pc=%08x pr=%08x\n",
+						pa, (int)sz, (u32)data, Sh4cntx.pc - 2, Sh4cntx.pr);
+			}
+		}
+		if (pa >= 0x0cb54540 && pa < 0x0cb54580) {
+			static int ctrl_lines = 0;
+			if (ctrl_lines < 120) {
+				ctrl_lines++;
+				cartlog("CTRLWR [%08x] sz=%d val=%08x pc=%08x pr=%08x\n",
+						pa, (int)sz, (u32)data, Sh4cntx.pc - 2, Sh4cntx.pr);
+			}
+		}
 	}
 	cartlog_hwaccess('W', addr, (u32)data);
 
