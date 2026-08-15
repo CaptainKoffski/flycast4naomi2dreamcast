@@ -9,6 +9,7 @@
 #include "hw/sh4/sh4_cache.h"
 #include "cfg/option.h"
 #include "emulator.h"
+#include "hw/naomi/cartlog.h"
 
 CCNRegisters ccn;
 
@@ -39,6 +40,15 @@ static void CCN_MMUCR_write(u32 addr, u32 value)
 {
 	CCN_MMUCR_type temp;
 	temp.reg_data = value & 0xfcfcff05;
+
+	// Cleopatra round 13: MMUCR write timeline (game enable vs shim clears).
+	{
+		static int mmucr_lines = 0;
+		if (mmucr_lines < 3000) {
+			mmucr_lines++;
+			cartlog("MMUCRWR val=%08x pc=%08x\n", value, p_sh4rcb->cntx.pc);
+		}
+	}
 
 	bool mmu_changed_state = temp.AT != CCN_MMUCR.AT;
 
