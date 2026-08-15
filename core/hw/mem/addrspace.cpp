@@ -228,6 +228,19 @@ void DYNACALL writet(u32 addr, T data)
 		if (pa == 0x0c0e842c || pa == 0x0c0e6298)
 			NOTICE_LOG(SH4, "CLEO-WATCH [%08x] = %08x pc=%08x pr=%08x",
 					pa, (u32)data, Sh4cntx.pc - 2, Sh4cntx.pr);
+		// DreamShell-hang hunt: log every store into the first 256 bytes of
+		// main RAM -- isoldr's GD-server lock byte is hardcoded at 0x8c00002d
+		// (dreamshell firmware/isoldr/loader/gdc_syscall.s, gdc_lock) and a
+		// game write over it would wedge every gdcExecServer call forever.
+		// pc tells BIOS (0x8c0010xx+) from game (0x8c02xxxx+) writers.
+		if (pa >= 0x0c000000 && pa < 0x0c000100) {
+			static int lowram_lines = 0;
+			if (lowram_lines < 4000) {
+				lowram_lines++;
+				cartlog("LOWRAMWR [%08x] sz=%d val=%08x pc=%08x pr=%08x\n",
+						pa, (int)sz, (u32)data, Sh4cntx.pc - 2, Sh4cntx.pr);
+			}
+		}
 	}
 	cartlog_hwaccess('W', addr, (u32)data);
 
