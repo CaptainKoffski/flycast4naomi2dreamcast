@@ -1,6 +1,7 @@
 #include "pvr_regs.h"
 #include "pvr_mem.h"
 #include "hw/sh4/sh4_if.h"
+#include "hw/sh4/sh4_mem.h"
 #include "hw/naomi/cartlog.h"
 #include "Renderer_if.h"
 #include "ta.h"
@@ -185,6 +186,30 @@ void pvr_WriteReg(u32 paddr,u32 data)
 		if (PvrReg(addr, u32) != data)
 		{
 			NOTICE_LOG(PVR, "CLEO-SPG write FB_R_SIZE = %08x (was %08x) pc=%08x pr=%08x", data, PvrReg(addr, u32), p_sh4rcb->cntx.pc, p_sh4rcb->cntx.pr);
+			// Composite mid-bar bug: the load engine (relocated to 8c0a-8c0e at
+			// runtime, not present in boot.bin statics) writes the load-era 480i
+			// FB_R_SIZE from 8c0db58a but draws the bar with a 240-line layout.
+			// One-shot dump of the live engine image for disassembly.
+			if (p_sh4rcb->cntx.pc >= 0x8c0d0000 && p_sh4rcb->cntx.pc < 0x8c0e0000
+					&& cartlog_enabled()) {
+				static bool dumped = false;
+				if (!dumped) {
+					dumped = true;
+					const char *clpath = getenv("FLYCAST_CARTLOG");
+					if (clpath != nullptr) {
+						std::string path = std::string(clpath) + ".engine.bin";
+						FILE *f = fopen(path.c_str(), "wb");
+						if (f != nullptr) {
+							for (u32 a = 0x8c0a0000; a < 0x8c0e8000; a += 4) {
+								u32 v = ReadMem32_nommu(a);
+								fwrite(&v, 4, 1, f);
+							}
+							fclose(f);
+							NOTICE_LOG(PVR, "CLEO engine dump 8c0a0000-8c0e8000 -> %s", path.c_str());
+						}
+					}
+				}
+			}
 			PvrReg(addr, u32) = data;
 			fb_dirty = false;
 			check_framebuffer_write();
