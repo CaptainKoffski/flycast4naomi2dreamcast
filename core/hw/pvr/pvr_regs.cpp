@@ -208,6 +208,18 @@ void pvr_WriteReg(u32 paddr,u32 data)
 		// this was ~120 syslog lines/s for the whole run (macOS NSLog is not free)
 		if (PvrReg(addr, u32) != data)
 			DEBUG_LOG(PVR, "CLEO-SPG write %s = %08x (was %08x) pc=%08x pr=%08x", regName(paddr), data, PvrReg(addr, u32), p_sh4rcb->cntx.pc, p_sh4rcb->cntx.pr);
+		// Round 15: HW photo shows scanout (R_SOF 0xB2000) disjoint from the
+		// render targets (W_SOF 0x4B2000/0x600000) under DreamShell -- log
+		// both sides' write timeline to file (capped) for the flycast
+		// baseline comparison.
+		if (PvrReg(addr, u32) != data) {
+			static int rsof_lines = 0;
+			if (rsof_lines < 800) {
+				rsof_lines++;
+				cartlog("SOFWR %s val=%08x was=%08x pc=%08x pr=%08x\n",
+						regName(paddr), data, PvrReg(addr, u32), p_sh4rcb->cntx.pc, p_sh4rcb->cntx.pr);
+			}
+		}
 		// CLEO-VRAMDUMP: FLYCAST_VRAMDUMP=<prefix> -> raw VRAM snapshot every
 		// 512 SOF writes (~2-4 s), max 40 files. Offline check of CPU FB paints
 		// (loadbar/HUD) that the render path never shows.
@@ -233,10 +245,26 @@ void pvr_WriteReg(u32 paddr,u32 data)
 	case FB_W_SOF1_addr:
 		data &= 0x01fffffc;
 		rend_set_fb_write_addr(data);
+		if (PvrReg(addr, u32) != data) {
+			static int wsof1_lines = 0;
+			if (wsof1_lines < 800) {
+				wsof1_lines++;
+				cartlog("SOFWR FB_W_SOF1 val=%08x was=%08x pc=%08x pr=%08x\n",
+						data, PvrReg(addr, u32), p_sh4rcb->cntx.pc, p_sh4rcb->cntx.pr);
+			}
+		}
 		break;
 
 	case FB_W_SOF2_addr:
 		data &= 0x01fffffc;
+		if (PvrReg(addr, u32) != data) {
+			static int wsof2_lines = 0;
+			if (wsof2_lines < 800) {
+				wsof2_lines++;
+				cartlog("SOFWR FB_W_SOF2 val=%08x was=%08x pc=%08x pr=%08x\n",
+						data, PvrReg(addr, u32), p_sh4rcb->cntx.pc, p_sh4rcb->cntx.pr);
+			}
+		}
 		break;
 
 	case SPG_HBLANK_INT_addr:

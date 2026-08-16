@@ -1,6 +1,8 @@
 #include "holly_intc.h"
 #include "sb.h"
 #include "hw/sh4/sh4_interrupts.h"
+#include "hw/naomi/cartlog.h"
+#include "hw/sh4/sh4_if.h"
 
 /*
 	ASIC Interrupt controller
@@ -154,6 +156,14 @@ static void Write_SB_IML6NRM(u32 addr, u32 data)
 	if (Naomi2 && (addr & 0x2000000) != 0)
 		// Ignore CLXB settings
 		return;
+	if (SB_IML6NRM != data) {
+		static int iml6nrm_lines = 0;
+		if (iml6nrm_lines < 400) {
+			iml6nrm_lines++;
+			cartlog("IMLWR IML6NRM val=%08x was=%08x pc=%08x pr=%08x\n",
+					data, SB_IML6NRM, p_sh4rcb->cntx.pc, p_sh4rcb->cntx.pr);
+		}
+	}
 	SB_IML6NRM = data;
 
 	asic_RL6Pending();
@@ -165,6 +175,14 @@ static void Write_SB_IML4NRM(u32 addr, u32 data)
 	if (Naomi2 && (addr & 0x2000000) != 0)
 		// Ignore CLXB settings
 		return;
+	if (SB_IML4NRM != data) {
+		static int iml4nrm_lines = 0;
+		if (iml4nrm_lines < 400) {
+			iml4nrm_lines++;
+			cartlog("IMLWR IML4NRM val=%08x was=%08x pc=%08x pr=%08x\n",
+					data, SB_IML4NRM, p_sh4rcb->cntx.pc, p_sh4rcb->cntx.pr);
+		}
+	}
 	SB_IML4NRM = data;
 
 	asic_RL4Pending();
@@ -176,6 +194,14 @@ static void Write_SB_IML2NRM(u32 addr, u32 data)
 	if (Naomi2 && (addr & 0x2000000) != 0)
 		// Ignore CLXB settings
 		return;
+	if (SB_IML2NRM != data) {
+		static int iml2nrm_lines = 0;
+		if (iml2nrm_lines < 400) {
+			iml2nrm_lines++;
+			cartlog("IMLWR IML2NRM val=%08x was=%08x pc=%08x pr=%08x\n",
+					data, SB_IML2NRM, p_sh4rcb->cntx.pc, p_sh4rcb->cntx.pr);
+		}
+	}
 	SB_IML2NRM = data;
 
 	asic_RL2Pending();
