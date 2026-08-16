@@ -286,6 +286,19 @@ void DYNACALL writet(u32 addr, T data)
 						pa, (int)sz, (u32)data, Sh4cntx.pc - 2, Sh4cntx.pr);
 			}
 		}
+		// Round 14b: the settings index the Naomi-BIOS EE lib writes to
+		// [0x8c1c9770] in the GREEN world (stubbing it to 0 turned the
+		// post-transition frames permanently empty, len=e0 forever). Also
+		// watch the raw config byte 0x8c1c94cd and gate 0x8c1c9768.
+		if ((pa >= 0x0c1c9764 && pa < 0x0c1c9788) ||
+			(pa >= 0x0c1c94c0 && pa < 0x0c1c94d0)) {
+			static int set_lines = 0;
+			if (set_lines < 3000) {
+				set_lines++;
+				cartlog("SETWR [%08x] sz=%d val=%08x pc=%08x pr=%08x\n",
+						pa, (int)sz, (u32)data, Sh4cntx.pc - 2, Sh4cntx.pr);
+			}
+		}
 	}
 	cartlog_hwaccess('W', addr, (u32)data);
 
