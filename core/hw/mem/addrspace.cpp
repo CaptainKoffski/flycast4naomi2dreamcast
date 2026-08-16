@@ -286,6 +286,19 @@ void DYNACALL writet(u32 addr, T data)
 						pa, (int)sz, (u32)data, Sh4cntx.pc - 2, Sh4cntx.pr);
 			}
 		}
+		// Round 24 (VGA-blur regression): who chooses interlace? The game's
+		// video flags word 0x8c0e842c drives vid_set_mode (FUN_8c0420e0) ->
+		// SPG_CONTROL=0x150; also watch the stored display mode 0x8c0e6298
+		// and the display-init gate global 0x8c0e9bd4.
+		if (pa == 0x0c0e842c || pa == 0x0c0e6298 || pa == 0x0c0e9bd4 ||
+			(pa >= 0x0c0c4518 && pa < 0x0c0c4528)) {
+			static int vidflg_lines = 0;
+			if (vidflg_lines < 400) {
+				vidflg_lines++;
+				cartlog("VIDFLG [%08x] sz=%d val=%08x pc=%08x pr=%08x\n",
+						pa, (int)sz, (u32)data, Sh4cntx.pc - 2, Sh4cntx.pr);
+			}
+		}
 		// Round 14b: the settings index the Naomi-BIOS EE lib writes to
 		// [0x8c1c9770] in the GREEN world (stubbing it to 0 turned the
 		// post-transition frames permanently empty, len=e0 forever). Also
