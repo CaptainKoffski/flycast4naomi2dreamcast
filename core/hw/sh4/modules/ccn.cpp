@@ -46,7 +46,10 @@ static void CCN_MMUCR_write(u32 addr, u32 value)
 		static int mmucr_lines = 0;
 		if (mmucr_lines < 3000) {
 			mmucr_lines++;
-			cartlog("MMUCRWR val=%08x pc=%08x\n", value, p_sh4rcb->cntx.pc);
+			// 0.6.0 regression hunt: also log the live GD syscall vector so the
+			// shim's isoldr-vs-BIOS gate can be validated against ground truth.
+			cartlog("MMUCRWR val=%08x pc=%08x vecbc=%08x\n", value, p_sh4rcb->cntx.pc,
+			        ReadMem32(0x8c0000bc));
 		}
 	}
 
