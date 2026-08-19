@@ -4,6 +4,7 @@
 
 #include "types.h"
 #include "hw/naomi/cartlog.h"   // Phase 3 instrumentation
+#include <cstdlib>              // Phase 3 (Task 6): getenv/strtoul for FLYCAST_ENTRYPC
 #include <ctime>                // Phase 4 (Task 13): wall-clock PC sampler
 
 #include "../sh4_interpreter.h"
@@ -24,9 +25,16 @@ Sh4Interpreter *Sh4Interpreter::Instance;
 // Naomi entrypoint is first reached. Dynamic half of naomi-vs-dreamcast §8-3.
 // ponytail: interpreter-only (this pass forces the interpreter); dynarec won't fire this.
 static bool cartlog_entry_seen = false;
+// Phase 3 (senkosp): the arming PC comes from FLYCAST_ENTRYPC (hex); default
+// stays Cleopatra's trampoline so existing recipes are unchanged.
+static u32 cartlog_entry_pc;
 static void cartlog_bios_check(u32 pc)
 {
-	if (pc == 0x8c04ae2c)
+	if (cartlog_entry_pc == 0) {
+		const char *e = getenv("FLYCAST_ENTRYPC");
+		cartlog_entry_pc = e ? (u32)strtoul(e, nullptr, 16) : 0x8c04ae2c;
+	}
+	if (pc == cartlog_entry_pc)
 		cartlog_entry_seen = true;
 	if (cartlog_entry_seen && (pc & 0x1fffffff) < 0x00200000)
 	{
