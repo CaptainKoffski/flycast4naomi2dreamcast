@@ -396,10 +396,39 @@ static void cartlog_shimwatch()
 	}
 }
 
+// Phase 4 (Task 2, senkosp) instrumentation: write-watch for senkosp's OWN
+// planned shim home, mem_b offset 0x00010000-0x00017fff (P1
+// 0x8c010000-0x8c018000, 32 KB) -- distinct from cartlog_shimwatch above,
+// whose Cleopatra-era window (mem_b 0x00fc0000+) senkosp's relocated heap
+// now occupies (docs/kb/relocation-map.md), so it cannot double as senkosp's
+// window. Baseline-and-compare, NOT non-zero like cartlog_shimwatch: the
+// Naomi BIOS may legitimately write low RAM at boot, and the DC loader
+// replaces this window wholesale before the game runs, so only a byte that
+// changes after the handoff baseline is game-runtime, not boot noise.
+// Reuses cartlog_main_base (Task 6's whole-RAM handoff snapshot,
+// cartlog_main_profile's same baseline) rather than keeping a private copy
+// -- the baseline is taken at the first cart DMA / 32 KB PIO threshold
+// (cartlog_handoff), strictly before this scan can first run (both call
+// paths into cartlog_sample() are gated on a non-null handoff baseline), so
+// it already satisfies "snapshot at the first sample". Same content-scan
+// trade-off as cartlog_shimwatch (dynarec bypasses C-level write functions;
+// a write reverted between samples evades the scan -- accepted, not new).
+static void cartlog_shimwatch2()
+{
+	const u8 *base = cartlog_main_base;
+	if (base == nullptr)
+		return;   // no baseline yet -- same discipline as cartlog_main_profile
+	const u32 LO = 0x00010000, HI = 0x00017fff;	// mem_b offset; P1 0x8c010000-0x8c018000
+	for (u32 i = LO; i <= HI; i++)
+		if (mem_b[i] != base[i])
+			cartlog("SHIMWATCH2 addr=%08x was=%02x now=%02x\n", 0x8c000000 + i, base[i], mem_b[i]);
+}
+
 static void cartlog_sample()
 {
 	cartlog_watermarks();
 	cartlog_shimwatch();   // Phase 4 (Task 4, V2): shim-home content scan, same cadence
+	cartlog_shimwatch2();  // Phase 4 (Task 2, senkosp): senkosp's own shim-home window, same cadence
 	cartlog_aram_profile();   // Phase 5: sound-RAM fit (write-truth, post-handoff)
 	cartlog_vram_profile();   // Phase 5: VRAM fit (write-truth, post-handoff)
 	cartlog_main_profile();   // v6: main-RAM fit (write-truth, post-handoff)
