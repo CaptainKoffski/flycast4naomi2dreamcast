@@ -47,6 +47,15 @@ bool maple_ddt_pending_reset;
 std::vector<std::pair<u32, std::vector<u32>>> mapleDmaOut;
 bool SDCKBOccupied;
 
+// Phase 4 (Task 1): which caller reached maple_DoDma() for the in-flight
+// transaction. Set at each of the two call sites below, read by maple_DoDma()
+// and by maple_jvs.cpp via maple_getTrig() -- boot-binary.md "Why three
+// checks cannot pass as written": a register-triggered transaction carries an
+// attributable guest-store PC; a vblank-triggered one does not.
+static const char *maple_trig = "?";
+
+const char *maple_getTrig() { return maple_trig; }
+
 void maple_vblank()
 {
 	if (SB_MDEN & 1)
@@ -60,6 +69,7 @@ void maple_vblank()
 			else
 			{
 				//DEBUG_LOG(MAPLE, "DDT vblank");
+				maple_trig = "vbl";   // Phase 4 (Task 1): hardware vblank trigger, no guest store
 				SB_MDST = 1;
 				maple_DoDma();
 				// if trigger reset is manual, mark it as pending
@@ -92,6 +102,7 @@ static void maple_SB_MDST_Write(u32 addr, u32 data)
 		if (SB_MDEN & 1)
 		{
 			SB_MDST = 1;
+			maple_trig = "reg";   // Phase 4 (Task 1): guest SB_MDST store, attributable PC
 			maple_DoDma();
 		}
 	}
@@ -176,8 +187,13 @@ static void maple_DoDma()
 	// terminator is never reached makes this loop walk RAM/MMIO forever, freezing
 	// the guest inside that single store opcode -- exactly the observed hang
 	// (fetch-path PCSAMPLE frozen, CPU burning). Log entry + guard the loop.
-	cartlog("MDODMA enter mdstar=%08x hdr0=%08x mden=%d pc=%08x\n",
-			SB_MDSTAR, ReadMem32_nommu(SB_MDSTAR), SB_MDEN & 1, Sh4cntx.pc);
+	// Phase 4 (Task 1): trig tag (this call's trigger source) + r15 water-mark
+	// sample -- MDODMA enter fires once per maple_DoDma() call, at many
+	// different task call-depths, unlike the single fixed depth CARTDMAPC
+	// samples SP at (see cartlog.h).
+	cartlog_sp_sample(Sh4cntx.r[15]);
+	cartlog("MDODMA enter mdstar=%08x hdr0=%08x mden=%d pc=%08x trig=%s\n",
+			SB_MDSTAR, ReadMem32_nommu(SB_MDSTAR), SB_MDEN & 1, Sh4cntx.pc, maple_trig);
 	u32 mdodma_iters = 0;
 	while (!last)
 	{
@@ -293,7 +309,7 @@ static void maple_DoDma()
 					const u8 *resp = (const u8 *)outbuf;
 					for (int i = 0; i < 0x40; i++)
 						cartlog("%02x", resp[i]);
-					cartlog("\n");
+					cartlog(" trig=%s\n", maple_trig);   // Phase 4 (Task 1)
 				}
 				mapleDmaOut.emplace_back(header_2, std::vector<u32>(outbuf, outbuf + outlen / 4));
 				cartlog("MDODMA frame_done outlen=%x\n", outlen);   // Phase 4 (Task 13)

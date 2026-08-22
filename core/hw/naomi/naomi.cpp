@@ -403,6 +403,7 @@ static void cartlog_sample()
 	cartlog_aram_profile();   // Phase 5: sound-RAM fit (write-truth, post-handoff)
 	cartlog_vram_profile();   // Phase 5: VRAM fit (write-truth, post-handoff)
 	cartlog_main_profile();   // v6: main-RAM fit (write-truth, post-handoff)
+	cartlog_sp_water();       // Phase 4 (Task 1): r15 water-mark across maple transactions
 	cartlog("CARTPIOCNT bytes=%llx\n", cartlog_pio_bytes);
 	// v4 diagnostics: raw ARAM snapshot, overwritten each sample — ground truth for
 	// "is the above-cap diff real sound content or an init-fill sweep" (2026-08-04)

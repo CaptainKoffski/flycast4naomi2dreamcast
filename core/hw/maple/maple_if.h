@@ -11,3 +11,9 @@ void maple_ReconnectDevices();
 void maple_ReconnectDevice(int bus, int port);
 
 void maple_vblank();
+
+// Phase 4 (Task 1): which caller reached maple_DoDma() for the in-flight
+// transaction -- "reg" (guest SB_MDST store, attributable PC) or "vbl"
+// (hardware vblank trigger, no guest store). boot-binary.md "Why three
+// checks cannot pass as written".
+const char *maple_getTrig();

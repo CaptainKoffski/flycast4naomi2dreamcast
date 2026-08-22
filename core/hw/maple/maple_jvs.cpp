@@ -1762,7 +1762,8 @@ void MIEImpl::handle_86_subcommand()
 		return;
 	}
 	u32 subcode = dma_buffer_in[0];
-	cartlog("MAPLEPC cmd=86 sub=%02x pc=%08x\n", subcode, Sh4cntx.pc);   // Phase 3: input(0x15)/EEPROM(0x01/03/0B) call site
+	cartlog_sp_sample(Sh4cntx.r[15]);   // Phase 4 (Task 1): r15 water-mark, same event as pc= below
+	cartlog("MAPLEPC cmd=86 sub=%02x pc=%08x trig=%s\n", subcode, Sh4cntx.pc, maple_getTrig());   // Phase 3/4: input(0x15)/EEPROM(0x01/03/0B) call site
 
 	// CT fw uses 13 as a 17, and 17 as 13 and also uses 19
 	if (crazy_mode)

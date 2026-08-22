@@ -4,11 +4,33 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstdarg>
+#include <cstdint>
 
 bool cartlog_enabled()
 {
 	static const bool on = getenv("FLYCAST_CARTLOG") != nullptr;
 	return on;
+}
+
+// Phase 4 (Task 1): r15 high/low water-mark, sampled at every maple
+// transaction (see cartlog.h) and emitted at the existing ~10s profile tick.
+static uint32_t sp_min = ~0u, sp_max = 0;
+
+void cartlog_sp_sample(unsigned sp)
+{
+	if (!cartlog_enabled())
+		return;
+	if (sp < sp_min)
+		sp_min = sp;
+	if (sp > sp_max)
+		sp_max = sp;
+}
+
+void cartlog_sp_water()
+{
+	if (!cartlog_enabled())
+		return;
+	cartlog("SPWATER min=%08x max=%08x\n", sp_min, sp_max);
 }
 
 void cartlog(const char *fmt, ...)
