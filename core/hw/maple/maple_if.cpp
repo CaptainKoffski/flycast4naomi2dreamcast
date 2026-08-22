@@ -192,8 +192,8 @@ static void maple_DoDma()
 	// different task call-depths, unlike the single fixed depth CARTDMAPC
 	// samples SP at (see cartlog.h).
 	cartlog_sp_sample(Sh4cntx.r[15]);
-	cartlog("MDODMA enter mdstar=%08x hdr0=%08x mden=%d pc=%08x trig=%s\n",
-			SB_MDSTAR, ReadMem32_nommu(SB_MDSTAR), SB_MDEN & 1, Sh4cntx.pc, maple_trig);
+	cartlog("MDODMA enter mdstar=%08x hdr0=%08x mden=%d pc=%08x trig=%s sp=%08x\n",
+			SB_MDSTAR, ReadMem32_nommu(SB_MDSTAR), SB_MDEN & 1, Sh4cntx.pc, maple_trig, Sh4cntx.r[15]);
 	u32 mdodma_iters = 0;
 	while (!last)
 	{
