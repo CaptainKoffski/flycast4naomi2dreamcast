@@ -128,7 +128,15 @@ void pvr_WriteReg(u32 paddr,u32 data)
 	if ((addr == TA_LIST_INIT_addr || addr == TA_LIST_CONT_addr
 	     || addr == SOFTRESET_addr || addr == TA_ALLOC_CTRL_addr
 	     || addr == STARTRENDER_addr) && cartlog_enabled())
+	{
 		cartlog("PVRW %s=%08x\n", regName(paddr), data);
+		// Phase 5 Task 5 extension: TEXERR classifier-cell sampler (senkosp) --
+		// this is the STARTRENDER write, active on the DC profile every vblank
+		// and dynarec-safe (MMIO write dispatch, not interpreter-only). The
+		// function throttles itself to every 64th call.
+		if (addr == STARTRENDER_addr)
+			cartlog_texerr_tick();
+	}
 
 	switch (addr)
 	{

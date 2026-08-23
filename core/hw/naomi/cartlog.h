@@ -20,3 +20,5 @@ void cartlog_ringdump(const char *why);      // print buffered slot writes, olde
 // boot-binary.md "SP -- two stacks, not one".
 void cartlog_sp_sample(unsigned sp);   // call at every maple transaction with Sh4cntx.r[15]
 void cartlog_sp_water();               // emit SPWATER; call at the existing ~10s profile tick
+// Phase 5 Task 5 extension: texture-error classifier-cell sampler (senkosp).
+void cartlog_texerr_tick();            // call on STARTRENDER write; throttles itself to every 64th call

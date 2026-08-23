@@ -424,6 +424,37 @@ static void cartlog_shimwatch2()
 			cartlog("SHIMWATCH2 addr=%08x was=%02x now=%02x\n", 0x8c000000 + i, base[i], mem_b[i]);
 }
 
+// Phase 5 Task 5 extension: texture-error classifier cells (docs/kb/
+// phase5-hardware.md senkosp2dreamcast repo, section "Texture-error handler"
+// -- classifier table). Failing index 0x8c1a20a0, KAMUI2 error code
+// 0x8c1a20a8 (same cell/value collision the T3/T6 write-watch caveat
+// documents), live-surface counter 0x8c1a2098. Called from the STARTRENDER
+// write path (pvr_regs.cpp) rather than the ~10s profile tick, because
+// STARTRENDER fires every vblank -- throttled here to every 64th call
+// instead of scanning every frame. Baseline-and-compare, same discipline as
+// cartlog_shimwatch2 above: one TEXERR line at the first sample, then only
+// when a value changes.
+void cartlog_texerr_tick()
+{
+	if (!cartlog_enabled())
+		return;
+	static unsigned calls;
+	if ((calls++ % 64) != 0)
+		return;
+	// mem_b offset; P1 0x8c1a20a0 / 0x8c1a20a8 / 0x8c1a2098 (all 4-byte aligned)
+	u32 idx  = *(const u32 *)&mem_b[0x001a20a0];
+	u32 code = *(const u32 *)&mem_b[0x001a20a8];
+	u32 cnt  = *(const u32 *)&mem_b[0x001a2098];
+	static bool have_baseline;
+	static u32 last_idx, last_code, last_cnt;
+	if (!have_baseline || idx != last_idx || code != last_code || cnt != last_cnt)
+	{
+		cartlog("TEXERR idx=%08x code=%08x d98=%08x\n", idx, code, cnt);
+		last_idx = idx; last_code = code; last_cnt = cnt;
+		have_baseline = true;
+	}
+}
+
 static void cartlog_sample()
 {
 	cartlog_watermarks();
