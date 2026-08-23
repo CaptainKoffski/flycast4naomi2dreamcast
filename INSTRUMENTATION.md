@@ -645,3 +645,5 @@ grep '^JVSREPORT' /tmp/capture.log | uniq -c    # input words seen
 | `CLEO-GPIO …` | NOTICE_LOG | SH4 GPIO (`PDTRA`/`PCTRA`) changes, with writer PC. |
 | `CLEO-CCR …` | NOTICE_LOG | Cache-control register changes. |
 | `CLEO-ARMRST …` | NOTICE_LOG | AICA ARM reset release + first sound-RAM words. |
+| `GDPIO fad secs type crc` | cartlog | CRC-32/IEEE of each PIO sector-batch refill (drive-truth, senkosp Phase 5). |
+| `GDDMA fad secs type crc` | cartlog | CRC-32/IEEE of each DMA sector-batch fill (drive-truth, senkosp Phase 5). |

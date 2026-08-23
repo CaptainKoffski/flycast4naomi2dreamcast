@@ -14,6 +14,21 @@
 #include "hw/sh4/sh4_sched.h"
 #include "imgread/common.h"
 #include "serialize.h"
+#include "hw/naomi/cartlog.h"
+
+// Phase 5 (senkosp texture-hang gate): CRC-32/IEEE over every sector batch
+// the emulated drive returns -- drive-truth for scripts/check_stream_crc.py.
+// Same variant as the shim's shim_crc32 and Python zlib.crc32.
+static u32 gd_crc32(const u8 *p, u32 len)
+{
+    u32 c = ~0u;
+    while (len--) {
+        c ^= *p++;
+        for (int k = 0; k < 8; k++)
+            c = (c >> 1) ^ (0xedb88320u & (0u - (c & 1u)));
+    }
+    return ~c;
+}
 
 int gdrom_schid;
 
@@ -118,6 +133,9 @@ void DmaBuffer::fill(read_params_t& params)
 	size = count * params.sector_type;
 
 	libGDR_ReadSector(cache, params.start_sector, count, params.sector_type);
+	cartlog("GDDMA fad=%08x secs=%x type=%x crc=%08x\n",
+			params.start_sector, count, params.sector_type,
+			gd_crc32(cache, count * params.sector_type));
 	params.start_sector += count;
 	params.remaining_sectors -= count;
 }
@@ -260,6 +278,9 @@ static void gd_set_state(gd_states state)
 
 				u16 *buffer = pio_buff.fill(sector_count * read_params.sector_type);
 				libGDR_ReadSector((u8*)buffer, read_params.start_sector, sector_count, read_params.sector_type);
+				cartlog("GDPIO fad=%08x secs=%x type=%x crc=%08x\n",
+						read_params.start_sector, sector_count, read_params.sector_type,
+						gd_crc32((const u8 *)buffer, sector_count * read_params.sector_type));
 				read_params.start_sector += sector_count;
 				read_params.remaining_sectors -= sector_count;
 
