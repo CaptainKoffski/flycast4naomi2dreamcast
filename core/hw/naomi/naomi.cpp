@@ -43,6 +43,8 @@
 #include "hw/pvr/pvr_mem.h"
 #include "hw/pvr/pvr_regs.h"   // Phase 5: TA/FB layout regs for the VRAM profile
 #include "hw/aica/aica_if.h"
+#include "emulator.h"           // Phase 5 Task 6: dc_savestate/emu.stop/emu.start (TEXERR auto-save)
+#include <atomic>
 #include <cstdio>              // Phase 5: snprintf for the ARAM histogram line
 #include <cstring>             // memcpy (handoff write-truth baselines)
 
@@ -424,6 +426,13 @@ static void cartlog_shimwatch2()
 			cartlog("SHIMWATCH2 addr=%08x was=%02x now=%02x\n", 0x8c000000 + i, base[i], mem_b[i]);
 }
 
+// Task 6 state for the deferred TEXERR savestate (see cartlog.h). Plain
+// file-scope statics, not function-local, so both the emu-thread setter in
+// cartlog_texerr_tick() and the render-thread poller cartlog_texerr_save_poll()
+// below share them.
+static std::atomic<bool> g_texerrSavePending{false};
+static std::atomic<u32> g_texerrSaveCode{0};
+
 // Phase 5 Task 5 extension: texture-error classifier cells (docs/kb/
 // phase5-hardware.md senkosp2dreamcast repo, section "Texture-error handler"
 // -- classifier table). Failing index 0x8c1a20a0, KAMUI2 error code
@@ -452,6 +461,55 @@ void cartlog_texerr_tick()
 		cartlog("TEXERR idx=%08x code=%08x d98=%08x\n", idx, code, cnt);
 		last_idx = idx; last_code = code; last_cnt = cnt;
 		have_baseline = true;
+	}
+
+	// Task 6: arm the one-shot savestate on the code cell's 0->nonzero
+	// transition. Independent of the print-throttle statics above (this must
+	// see every throttled sample, not just the ones that changed) and of its
+	// own one-shot latch (armed_once) so a later code==0 (cell reused by a
+	// benign call, docs/kb/phase5-hardware.md "no clear-on-read semantics")
+	// can never re-arm a second save. This function runs on the emu thread
+	// (called from the STARTRENDER write path) -- it only sets the flag;
+	// cartlog_texerr_save_poll() (render thread) does the actual save.
+	static bool have_prev_code, armed_once;
+	static u32 prev_code;
+	if (!armed_once && have_prev_code && prev_code == 0 && code != 0)
+	{
+		armed_once = true;
+		g_texerrSaveCode.store(code, std::memory_order_relaxed);
+		g_texerrSavePending.store(true, std::memory_order_release);
+	}
+	prev_code = code;
+	have_prev_code = true;
+}
+
+void cartlog_texerr_save_poll()
+{
+	if (!cartlog_enabled())
+		return;
+	if (!g_texerrSavePending.exchange(false, std::memory_order_acquire))
+		return;
+	u32 code = g_texerrSaveCode.load(std::memory_order_relaxed);
+	if (!dc_savestateAllowed())
+	{
+		cartlog("TEXERRSAVE FAILED code=%08x reason=not-allowed\n", code);
+		return;
+	}
+	// index 0 == default slot, no "_N" filename suffix (oslib.cpp
+	// getSavestatePath) -- matches the Phase 3 canary-snapshot precedent
+	// (docs/kb/tooling.md "Phase 3: RAM snapshot"). Query the path with the
+	// same (index, writable) args dc_savestate(0) itself uses, so the
+	// logged path is exactly where the file lands, not a guess.
+	std::string path = hostfs::getSavestatePath(0, true);
+	try {
+		emu.stop();     // must run from the render thread: joins the emu
+		                // thread's own std::async result (checkStatus()) --
+		                // calling this from the emu thread itself deadlocks.
+		dc_savestate(0);
+		emu.start();
+		cartlog("TEXERRSAVE code=%08x slot=0 %s\n", code, path.c_str());
+	} catch (const FlycastException& e) {
+		cartlog("TEXERRSAVE FAILED code=%08x reason=%s\n", code, e.what());
 	}
 }
 

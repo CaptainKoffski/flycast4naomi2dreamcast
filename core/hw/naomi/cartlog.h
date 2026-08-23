@@ -22,3 +22,10 @@ void cartlog_sp_sample(unsigned sp);   // call at every maple transaction with S
 void cartlog_sp_water();               // emit SPWATER; call at the existing ~10s profile tick
 // Phase 5 Task 5 extension: texture-error classifier-cell sampler (senkosp).
 void cartlog_texerr_tick();            // call on STARTRENDER write; throttles itself to every 64th call
+// Phase 5 Task 6: one-shot RAM snapshot on the TEXERR code=0->nonzero
+// transition. cartlog_texerr_tick() (emu thread) only arms a flag -- it
+// cannot safely call dc_savestate()/emu.stop() itself (those join the emu
+// thread's own std::async result; self-join would deadlock). This poll
+// function does the actual save and must be called once per rendered frame
+// from the UI/render thread (mainui_rend_frame(), NOT the emu thread).
+void cartlog_texerr_save_poll();

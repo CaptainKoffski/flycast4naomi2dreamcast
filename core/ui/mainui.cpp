@@ -27,6 +27,7 @@
 #include "imgui_driver.h"
 #include "profiler/fc_profiler.h"
 #include "oslib/i18n.h"
+#include "hw/naomi/cartlog.h"   // Phase 5 Task 6: TEXERR auto-savestate poll (render thread)
 
 #include <chrono>
 #include <thread>
@@ -41,6 +42,7 @@ bool mainui_rend_frame()
 
 	os_DoEvents();
 	os_UpdateInputState();
+	cartlog_texerr_save_poll();   // no-op unless cartlog is enabled and a save is pending
 
 	if (gui_is_open())
 	{
