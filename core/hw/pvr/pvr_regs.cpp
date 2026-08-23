@@ -135,7 +135,13 @@ void pvr_WriteReg(u32 paddr,u32 data)
 		// and dynarec-safe (MMIO write dispatch, not interpreter-only). The
 		// function throttles itself to every 64th call.
 		if (addr == STARTRENDER_addr)
+		{
 			cartlog_texerr_tick();
+			// Phase 5 fix-scoping: arena high-water walker (senkosp) --
+			// same site, same dynarec-safety argument; prints only on a
+			// new running max.
+			cartlog_arena_tick();
+		}
 	}
 
 	switch (addr)

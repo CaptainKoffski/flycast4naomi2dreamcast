@@ -29,3 +29,5 @@ void cartlog_texerr_tick();            // call on STARTRENDER write; throttles i
 // function does the actual save and must be called once per rendered frame
 // from the UI/render thread (mainui_rend_frame(), NOT the emu thread).
 void cartlog_texerr_save_poll();
+// Phase 5 fix-scoping (senkosp): KAMUI2 VRAM texture-arena high-water walker.
+void cartlog_arena_tick();             // call on STARTRENDER write; prints only on a new running max

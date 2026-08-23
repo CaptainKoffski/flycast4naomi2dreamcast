@@ -513,6 +513,65 @@ void cartlog_texerr_save_poll()
 	}
 }
 
+// Phase 5 fix-scoping (senkosp): KAMUI2 VRAM texture-arena high-water walker.
+// Layout is savestate-verified, not guessed (senkosp2dreamcast
+// docs/kb/phase5-hardware.md "Texture-error hang verdict" Steps 4-5):
+// config block P1 0x8c170eb8: +0x04 total arena size (0x800000 DC seed /
+// 0x1000000 Naomi seed), +0x24/+0x2c bank-0 alloc/free list heads,
+// +0x34/+0x3c bank-1; node stride 0x18: +0x00 u16 flags, +0x08 next,
+// +0x10 size. Type bit 0x02 in flags is set only on the non-texture
+// reservations (scan-out FB pair 0x13, region/TA block 0x43); every
+// texture-class block (0x11 game texture, 0x15 sub-page, KAMUI2-internal)
+// has it clear -- that split is what lets one number ("tex") transfer from
+// a Naomi-profile measurement run to the DC arena budget. Walks every
+// STARTRENDER (~100 nodes of guest RAM, trivial), prints only when a
+// running max (total allocated or texture-only bytes) increases, so a
+// whole leg emits tens of lines, not thousands.
+void cartlog_arena_tick()
+{
+	if (!cartlog_enabled())
+		return;
+	const u32 CFG = 0x00170eb8;	// mem_b offset; P1 0x8c170eb8
+	u32 total = *(const u32 *)&mem_b[CFG + 0x04];
+	if (total != 0x00800000 && total != 0x01000000)
+		return;		// KAMUI2 not initialized yet (or not this game)
+	u32 alloc = 0, tex = 0, nalloc = 0, fre = 0, maxfree = 0, nfree = 0;
+	static const u32 heads[4] = { 0x24, 0x2c, 0x34, 0x3c };	// b0 alloc, b0 free, b1 alloc, b1 free
+	for (int h = 0; h < 4; h++)
+	{
+		bool isfree = (h & 1) != 0;
+		u32 node = *(const u32 *)&mem_b[CFG + heads[h]];
+		// cap 512: descriptor pool capacity is 0x105, anything past that is
+		// a corrupt or mid-init list, not data
+		for (int n = 0; n < 512 && node != 0; n++)
+		{
+			u32 off = node & 0x1fffffff;
+			if (off < 0x0c000000 || off - 0x0c000000 >= RAM_SIZE - 0x18)
+				break;	// non-RAM link -- stop this list, keep the others
+			off -= 0x0c000000;
+			u32 flags = *(const u16 *)&mem_b[off];
+			u32 size  = *(const u32 *)&mem_b[off + 0x10];
+			if (isfree) {
+				fre += size; nfree++;
+				if (size > maxfree) maxfree = size;
+			} else {
+				alloc += size; nalloc++;
+				if (!(flags & 0x02))
+					tex += size;
+			}
+			node = *(const u32 *)&mem_b[off + 0x08];
+		}
+	}
+	static u32 max_alloc, max_tex;
+	if (alloc > max_alloc || tex > max_tex)
+	{
+		if (alloc > max_alloc) max_alloc = alloc;
+		if (tex > max_tex) max_tex = tex;
+		cartlog("ARENAHW total=%08x alloc=%08x tex=%08x nblk=%x free=%08x maxfree=%08x nfree=%x\n",
+			total, alloc, tex, nalloc, fre, maxfree, nfree);
+	}
+}
+
 static void cartlog_sample()
 {
 	cartlog_watermarks();
