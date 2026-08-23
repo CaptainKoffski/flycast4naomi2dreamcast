@@ -647,3 +647,4 @@ grep '^JVSREPORT' /tmp/capture.log | uniq -c    # input words seen
 | `CLEO-ARMRST …` | NOTICE_LOG | AICA ARM reset release + first sound-RAM words. |
 | `GDPIO fad secs type crc` | cartlog | CRC-32/IEEE of each PIO sector-batch refill (drive-truth, senkosp Phase 5). |
 | `GDDMA fad secs type crc` | cartlog | CRC-32/IEEE of each DMA sector-batch fill (drive-truth, senkosp Phase 5). |
+| `TEXERR idx code d98` | cartlog | senkosp's texture-error classifier cells (0x8c1a20a0/a8/98), sampled every 64th STARTRENDER; baseline-and-compare, emitted only on change (senkosp Phase 5 Task 5). |
