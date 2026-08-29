@@ -10,6 +10,7 @@
 #include "hw/sh4/sh4_core.h"
 #include "hw/sh4/sh4_sched.h"
 #include "profiler/fc_profiler.h"
+#include "hw/naomi/cartlog.h"
 #include "network/ggpo.h"
 
 #include <mutex>
@@ -529,6 +530,19 @@ void rend_start_render()
 		return;
 
 	FillBGP(ctx);
+
+	// Phase 5 round-5 (senkosp): per-frame TA feed high-water. Raw TA bytes of
+	// the frame being kicked -- the demand side for sizing the DC-arm ISP
+	// param buffer (35 KB vs Naomi's 2.23 MB). rend lists are still unparsed
+	// here; tad byte count is final at pop. Running max only.
+	if (cartlog_enabled()) {
+		static u32 tafeed_max = 0;
+		u32 tafeed = (u32)(ctx->tad.End() - ctx->tad.thd_root);
+		if (tafeed > tafeed_max) {
+			tafeed_max = tafeed;
+			cartlog("PARAMHW tafeed=%08x pb=%08x\n", tafeed, PARAM_BASE);
+		}
+	}
 
 	ctx->rend.isRTT = (FB_W_SOF1 & 0x1000000) != 0;
 	ctx->rend.fb_W_SOF1 = FB_W_SOF1;

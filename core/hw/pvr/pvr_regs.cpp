@@ -141,6 +141,57 @@ void pvr_WriteReg(u32 paddr,u32 data)
 			// same site, same dynarec-safety argument; prints only on a
 			// new running max.
 			cartlog_arena_tick();
+			// Phase 5 round-5 (senkosp hw ISTERR bit0 "ISP out of Cache"):
+			// render/TA buffer-register snapshot at the render kick, for the
+			// Naomi-arm vs DC-arm config diff. Buffer regs alternate every
+			// frame (double buffering), so a flat per-render log would be
+			// duplicates; instead print each never-seen layout tuple once
+			// (FNV hash, 512-slot table) + an unconditional heartbeat every
+			// 512 renders so the log shows liveness and render count.
+			{
+				static u64 rndreg_seen[512];
+				static int rndreg_nseen = 0;
+				static u32 rndreg_count = 0;
+				rndreg_count++;
+				const u32 tup[14] = { PARAM_BASE, REGION_BASE, SPAN_SORT_CFG, FPU_PARAM_CFG,
+						ISP_FEED_CFG, TA_OL_BASE, TA_ISP_BASE, TA_OL_LIMIT, TA_ISP_LIMIT,
+						TA_NEXT_OPB_INIT, TA_GLOB_TILE_CLIP.full, TA_ALLOC_CTRL,
+						FB_W_CTRL.full, SCALER_CTL.full };
+				u64 h = 0xcbf29ce484222325ULL;
+				for (u32 w : tup) { h ^= w; h *= 0x100000001b3ULL; }
+				bool fresh = false;
+				if (rndreg_nseen < 512) {
+					int i = 0;
+					while (i < rndreg_nseen && rndreg_seen[i] != h) i++;
+					if (i == rndreg_nseen) { rndreg_seen[rndreg_nseen++] = h; fresh = true; }
+				}
+				// Round-5 poke-site hunt: one-shot full main-RAM dump at render
+				// 1500 (game TA layout live, menus). Offline search for the
+				// layout words locates the Kamui master copies to shim-poke.
+				static bool ramdumped = false;
+				if (!ramdumped && rndreg_count == 1500) {
+					ramdumped = true;
+					const char *clpath = getenv("FLYCAST_CARTLOG");
+					if (clpath != nullptr) {
+						std::string rpath = std::string(clpath) + ".ram.bin";
+						FILE *rf = fopen(rpath.c_str(), "wb");
+						if (rf != nullptr) {
+							fwrite(&mem_b[0], 1, RAM_SIZE, rf);
+							fclose(rf);
+							NOTICE_LOG(PVR, "RNDREG ram dump -> %s", rpath.c_str());
+						}
+					}
+				}
+				if (fresh || (rndreg_count & 0x1ff) == 0)
+					cartlog("RNDREG n=%u %s pb=%08x rb=%08x span=%08x fpu=%08x feed=%08x"
+							" olb=%08x ispb=%08x oll=%08x ispl=%08x nopbi=%08x clip=%08x alloc=%08x"
+							" wctl=%08x scl=%08x bgd=%08x bgt=%08x nopb=%08x wsof=%08x pc=%08x\n",
+							rndreg_count, fresh ? "NEW" : "HB",
+							tup[0], tup[1], tup[2], tup[3], tup[4], tup[5], tup[6], tup[7],
+							tup[8], tup[9], tup[10], tup[11], tup[12], tup[13],
+							ISP_BACKGND_D.i, ISP_BACKGND_T.full, TA_NEXT_OPB, FB_W_SOF1,
+							p_sh4rcb->cntx.pc);
+			}
 		}
 	}
 
