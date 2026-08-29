@@ -124,6 +124,24 @@ void pvr_WriteReg(u32 paddr,u32 data)
 			((paddr >> 26) & 7) == 2 ? 'b' : (paddr & 0x2000000) ? '1' : '0',
 					data);
 
+	// Phase 5 round-6 (senkosp G-carve): TA_ISP_LIMIT writer hunt. The shim's
+	// post-init dev-word stomp was overwritten (r8a-carve leg: registers show
+	// the library carve, stomp values gone by render 1500) -- log guest pc +
+	// value once per unique value to locate the actual per-frame source.
+	if (addr == TA_ISP_LIMIT_addr && cartlog_enabled())
+	{
+		static u32 seen[16];
+		static int nseen;
+		int i = 0;
+		while (i < nseen && seen[i] != data) i++;
+		if (i == nseen && nseen < 16)
+		{
+			seen[nseen++] = data;
+			cartlog("ISPLW val=%08x pc=%08x pr=%08x\n", data,
+					p_sh4rcb->cntx.pc, p_sh4rcb->cntx.pr);
+		}
+	}
+
 	// Cleopatra DreamShell round 12: TA control choreography baseline.
 	if ((addr == TA_LIST_INIT_addr || addr == TA_LIST_CONT_addr
 	     || addr == SOFTRESET_addr || addr == TA_ALLOC_CTRL_addr
