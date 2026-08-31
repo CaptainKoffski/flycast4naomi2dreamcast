@@ -322,7 +322,10 @@ void pvr_WriteReg(u32 paddr,u32 data)
 		// baseline comparison.
 		if (PvrReg(addr, u32) != data) {
 			static int rsof_lines = 0;
-			if (rsof_lines < 800) {
+			// senkosp black-gap recon (2026-09-01): 800 was exhausted by the
+			// loader's own page-flips (~10 s at 60 Hz) before game takeover --
+			// raised so the game's first R_SOF writes are captured too.
+			if (rsof_lines < 4000) {
 				rsof_lines++;
 				cartlog("SOFWR %s val=%08x was=%08x pc=%08x pr=%08x\n",
 						regName(paddr), data, PvrReg(addr, u32), p_sh4rcb->cntx.pc, p_sh4rcb->cntx.pr);
@@ -388,6 +391,28 @@ void pvr_WriteReg(u32 paddr,u32 data)
 		break;
 
 	case VO_CONTROL_addr:
+		// senkosp black-gap recon (2026-09-01): snapshot VRAM on every
+		// blank-bit TRANSITION -- gap start (game sets blank at its KAMUI2
+		// mode-set) and gap end (game unblanks for NOW LOADING). Answers
+		// whether the loader splash still lives at the scanned base under
+		// the blank (cheap decorate route go/no-go).
+		{
+			static const char *vd_prefix = getenv("FLYCAST_VRAMDUMP");
+			static u32 vd_files;
+			if (vd_prefix != nullptr && ((data ^ VO_CONTROL.full) & 8) && vd_files < 12)
+			{
+				char vd_path[512];
+				snprintf(vd_path, sizeof(vd_path), "%s-blank%c-%02u.bin", vd_prefix, (data & 8) ? '1' : '0', vd_files++);
+				FILE *vd = fopen(vd_path, "wb");
+				if (vd != nullptr)
+				{
+					fwrite(&vram[0], 1, VRAM_SIZE, vd);
+					fclose(vd);
+					NOTICE_LOG(PVR, "CLEO-VRAMDUMP %s (blank-edge) vo=%08x->%08x sof1=%08x sof2=%08x fb_r_size=%08x fb_r_ctrl=%08x pc=%08x pr=%08x",
+							vd_path, VO_CONTROL.full, data, FB_R_SOF1, FB_R_SOF2, FB_R_SIZE.full, FB_R_CTRL.full, p_sh4rcb->cntx.pc, p_sh4rcb->cntx.pr);
+				}
+			}
+		}
 		// CLEO-VRAMDUMP: a VO_CONTROL write from the shim (0x8cfcxxxx) is the
 		// unblank right after a loadbar/hex paint -- snapshot VRAM at exactly
 		// that moment (the paint is guaranteed present at the current base).
