@@ -425,9 +425,14 @@ static void cartlog_shimwatch2()
 	// heap to 0x8c00c000, plus the 0x3800-0x4000 shoulder). The old window
 	// 0x8c010000-0x8c017fff (shim home) is kept. The gap 0x8c00c000-0x8c010000
 	// is game-owned (boot stack/VBR/scratch, boot-binary.md) and deliberately
-	// NOT watched -- it would fire every tick. Line cap: a real collision
-	// verdict needs the first hits, not a flood.
+	// NOT watched -- it would fire every tick. Cap = first 64 unique
+	// addresses (fix round, R6): a per-address seen-bitmap dedups repeat
+	// hits on an already-diverged byte across ticks -- without it, a single
+	// byte that flips once and stays flipped re-counts against the cap on
+	// every ~10s tick, exhausting it on a handful of addresses and silently
+	// hiding new ones later in the run.
 	static u32 emitted = 0;
+	static u8 seen[(0x18000 - 0x3800 + 7) / 8];   // bit per offset, indexed by (i - LO1); wastes the skipped-gap bits, keeps indexing trivial
 	const u32 LO1 = 0x00003800, HI1 = 0x0000bfff;
 	const u32 LO2 = 0x00010000, HI2 = 0x00017fff;
 	for (u32 i = LO1; i <= HI2; i++)
@@ -436,6 +441,11 @@ static void cartlog_shimwatch2()
 			continue;
 		if (mem_b[i] != base[i])
 		{
+			u32 idx = i - LO1;
+			u8 bit = 1 << (idx & 7);
+			if (seen[idx >> 3] & bit)
+				continue;   // already emitted this address on an earlier tick
+			seen[idx >> 3] |= bit;
 			if (emitted < 64)
 				cartlog("SHIMWATCH2 addr=%08x was=%02x now=%02x\n", 0x8c000000 + i, base[i], mem_b[i]);
 			else if (emitted == 64)
