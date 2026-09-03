@@ -10,6 +10,7 @@
 #include "cfg/option.h"
 #include "emulator.h"
 #include "hw/naomi/cartlog.h"
+#include "hw/sh4/sh4_mem.h"
 
 CCNRegisters ccn;
 
@@ -106,6 +107,13 @@ static void CCN_CCR_write(u32 addr, u32 value)
 		if ((Sh4cntx.pc & 0x1fffffff) >= 0x0ce94000 && (Sh4cntx.pc & 0x1fffffff) < 0x0ce95000) {
 			cartlog("HANDOFF-DC pc=%08x\n", Sh4cntx.pc);
 			cartlog_handoff("dc-ccr");
+			// DEBUG ROUND 1 (senkosp phase7 T1 task6, E1): what serves
+			// [0x8c0000bc] at handoff -- the vector table itself sits
+			// below the kernel-slice copy (0x600-0x3800) so it survives
+			// our stomp untouched; this is the BIOS/reios-installed
+			// value verbatim. TEMP instrumentation for the debug round,
+			// not part of the shipped shimwatch mechanism.
+			cartlog("VECBC %08x\n", *(u32*)&mem_b[0xbc]);
 		}
 		//Shikigami No Shiro II uses ICI frequently
 		if (!config::DynarecEnabled)
