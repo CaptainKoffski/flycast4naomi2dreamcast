@@ -440,7 +440,7 @@ void cartlog_shimwatch2()
 	// budget and mask a later hole hit -- a real risk now that this also
 	// runs off the per-vblank STARTRENDER tick (far more samples per run
 	// than the old ~10s Naomi-only tick).
-	static u32 emitted_hole = 0, emitted_shim = 0;
+	static u32 emitted_shim = 0;
 	static u8 seen[(0x18000 - 0x3800 + 7) / 8];   // bit per offset, indexed by (i - LO1); wastes the skipped-gap bits, keeps indexing trivial
 	const u32 LO1 = 0x00003800, HI1 = 0x0000bfff;
 	const u32 LO2 = 0x00010000, HI2 = 0x00017fff;
@@ -459,7 +459,6 @@ void cartlog_shimwatch2()
 			{
 				// hole window: uncapped, every unique address matters
 				cartlog("SHIMWATCH2 addr=%08x was=%02x now=%02x\n", 0x8c000000 + i, base[i], mem_b[i]);
-				emitted_hole++;
 			}
 			else
 			{
