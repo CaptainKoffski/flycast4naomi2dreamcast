@@ -728,6 +728,7 @@ u32 gd_get_subcode(u32 format, u32 fad, u8 *subc_info)
 
 static void gd_process_spi_cmd()
 {
+	cartlog_sp_sample(Sh4cntx.r[15]);   // Phase 7 T1: boot-SP watermark feed
 
 	printf_spi("Sense: %02x %02x %02x", sns_asc, sns_ascq, sns_key);
 

@@ -16,6 +16,12 @@ bool cartlog_enabled()
 // transaction (see cartlog.h) and emitted at the existing ~10s profile tick.
 static uint32_t sp_min = ~0u, sp_max = 0;
 
+// Phase 7 T1: separate low-water for the BOOT stack window only
+// (0x8c000000-0x8c010000) -- the isoldr blob+heap ceiling question.
+// Event-sampled (maple + GD command starts), NOT per-instruction: the
+// emitted floor is evidence, not proof (KB records the limit).
+static uint32_t sp_boot_min = ~0u;
+
 void cartlog_sp_sample(unsigned sp)
 {
 	if (!cartlog_enabled())
@@ -24,13 +30,15 @@ void cartlog_sp_sample(unsigned sp)
 		sp_min = sp;
 	if (sp > sp_max)
 		sp_max = sp;
+	if (sp >= 0x8c000000u && sp < 0x8c010000u && sp < sp_boot_min)
+		sp_boot_min = sp;
 }
 
 void cartlog_sp_water()
 {
 	if (!cartlog_enabled())
 		return;
-	cartlog("SPWATER min=%08x max=%08x\n", sp_min, sp_max);
+	cartlog("SPWATER min=%08x max=%08x bootmin=%08x\n", sp_min, sp_max, sp_boot_min);
 }
 
 void cartlog(const char *fmt, ...)

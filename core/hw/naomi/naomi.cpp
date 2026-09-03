@@ -420,10 +420,29 @@ static void cartlog_shimwatch2()
 	const u8 *base = cartlog_main_base;
 	if (base == nullptr)
 		return;   // no baseline yet -- same discipline as cartlog_main_profile
-	const u32 LO = 0x00010000, HI = 0x00017fff;	// mem_b offset; P1 0x8c010000-0x8c018000
-	for (u32 i = LO; i <= HI; i++)
+	// Phase 7 T1: widened down to the DreamShell isoldr slot (P1
+	// 0x8c003800-0x8c00bfff = planned blob 0x8c004000-0x8c00b908 + pinned
+	// heap to 0x8c00c000, plus the 0x3800-0x4000 shoulder). The old window
+	// 0x8c010000-0x8c017fff (shim home) is kept. The gap 0x8c00c000-0x8c010000
+	// is game-owned (boot stack/VBR/scratch, boot-binary.md) and deliberately
+	// NOT watched -- it would fire every tick. Line cap: a real collision
+	// verdict needs the first hits, not a flood.
+	static u32 emitted = 0;
+	const u32 LO1 = 0x00003800, HI1 = 0x0000bfff;
+	const u32 LO2 = 0x00010000, HI2 = 0x00017fff;
+	for (u32 i = LO1; i <= HI2; i++)
+	{
+		if (i > HI1 && i < LO2)
+			continue;
 		if (mem_b[i] != base[i])
-			cartlog("SHIMWATCH2 addr=%08x was=%02x now=%02x\n", 0x8c000000 + i, base[i], mem_b[i]);
+		{
+			if (emitted < 64)
+				cartlog("SHIMWATCH2 addr=%08x was=%02x now=%02x\n", 0x8c000000 + i, base[i], mem_b[i]);
+			else if (emitted == 64)
+				cartlog("SHIMWATCH2 CAP\n");
+			emitted++;
+		}
+	}
 }
 
 // Task 6 state for the deferred TEXERR savestate (see cartlog.h). Plain
