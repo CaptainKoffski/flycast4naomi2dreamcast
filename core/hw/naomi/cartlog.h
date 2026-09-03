@@ -31,3 +31,9 @@ void cartlog_texerr_tick();            // call on STARTRENDER write; throttles i
 void cartlog_texerr_save_poll();
 // Phase 5 fix-scoping (senkosp): KAMUI2 VRAM texture-arena high-water walker.
 void cartlog_arena_tick();             // call on STARTRENDER write; prints only on a new running max
+// Phase 4 (Task 2, senkosp) / Phase 7 T1 fix round 2: shim-home + isoldr-slot
+// write-watch. Was file-local to naomi.cpp; exported so the DC-reachable
+// STARTRENDER tick (pvr_regs.cpp) can drive it directly -- the Naomi-only
+// ~10s profile tick never fires on a native DC boot (see cartlog_dc_armed).
+void cartlog_shimwatch2();
+bool cartlog_dc_armed();               // true once the handoff baseline exists (Naomi or DC-CCR trigger)

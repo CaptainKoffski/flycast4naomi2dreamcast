@@ -81,6 +81,22 @@ static void CCN_CCR_write(u32 addr, u32 value)
 
 	if (temp.ICI) {
 		DEBUG_LOG(SH4, "Sh4: i-cache invalidation %08X", Sh4cntx.pc);
+		// Phase 7 T1 (fix round 2, DC-boot arming): senkosp's record-walk
+		// stub (loader/main.c HANDOFF_SCRATCH 0x8ce94000, senkosp2dreamcast
+		// repo) ends with an i-cache invalidate executed from its
+		// handoff-scratch page 0x8ce94000-0x8ce95000 -- the last
+		// instruction before the game's own first instruction runs. That's
+		// the DC-native equivalent of the Naomi path's first-cart-DMA
+		// handoff (cartlog_handoff): strictly after the record walk has
+		// written the shim window, strictly before any game write lands,
+		// so it can't leak either direction. Arms the same baselines the
+		// Naomi path uses, so cartlog_sample()/cartlog_shimwatch2()/
+		// cartlog_sp_water() can run on a native DC boot, which never
+		// takes the Naomi cart DMA/PIO path that normally arms them.
+		if (Sh4cntx.pc >= 0x8ce94000 && Sh4cntx.pc < 0x8ce95000) {
+			cartlog("HANDOFF-DC pc=%08x\n", Sh4cntx.pc);
+			cartlog_handoff("dc-ccr");
+		}
 		//Shikigami No Shiro II uses ICI frequently
 		if (!config::DynarecEnabled)
 			icache.Invalidate();

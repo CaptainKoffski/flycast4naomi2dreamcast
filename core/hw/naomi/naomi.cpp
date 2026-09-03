@@ -415,7 +415,7 @@ static void cartlog_shimwatch()
 // it already satisfies "snapshot at the first sample". Same content-scan
 // trade-off as cartlog_shimwatch (dynarec bypasses C-level write functions;
 // a write reverted between samples evades the scan -- accepted, not new).
-static void cartlog_shimwatch2()
+void cartlog_shimwatch2()
 {
 	const u8 *base = cartlog_main_base;
 	if (base == nullptr)
@@ -425,13 +425,22 @@ static void cartlog_shimwatch2()
 	// heap to 0x8c00c000, plus the 0x3800-0x4000 shoulder). The old window
 	// 0x8c010000-0x8c017fff (shim home) is kept. The gap 0x8c00c000-0x8c010000
 	// is game-owned (boot stack/VBR/scratch, boot-binary.md) and deliberately
-	// NOT watched -- it would fire every tick. Cap = first 64 unique
-	// addresses (fix round, R6): a per-address seen-bitmap dedups repeat
-	// hits on an already-diverged byte across ticks -- without it, a single
-	// byte that flips once and stays flipped re-counts against the cap on
-	// every ~10s tick, exhausting it on a handful of addresses and silently
-	// hiding new ones later in the run.
-	static u32 emitted = 0;
+	// NOT watched -- it would fire every tick. A per-address seen-bitmap
+	// dedups repeat hits on an already-diverged byte across ticks -- without
+	// it, a single byte that flips once and stays flipped re-counts on
+	// every tick.
+	//
+	// Phase 7 T1 (fix round 2, DC-boot arming): the two windows cap
+	// independently, not against a shared budget. The hole window
+	// (0x3800-0xbfff) is expected to emit zero lines ever, so every hit
+	// matters -- uncapped (the dedup bitmap already bounds the worst case
+	// to one line per unique address). The shim-home window
+	// (0x10000-0x17fff) is where the shim's own mirror/state churn lives;
+	// left capped at 64+CAP so that expected noise can't exhaust a shared
+	// budget and mask a later hole hit -- a real risk now that this also
+	// runs off the per-vblank STARTRENDER tick (far more samples per run
+	// than the old ~10s Naomi-only tick).
+	static u32 emitted_hole = 0, emitted_shim = 0;
 	static u8 seen[(0x18000 - 0x3800 + 7) / 8];   // bit per offset, indexed by (i - LO1); wastes the skipped-gap bits, keeps indexing trivial
 	const u32 LO1 = 0x00003800, HI1 = 0x0000bfff;
 	const u32 LO2 = 0x00010000, HI2 = 0x00017fff;
@@ -446,13 +455,33 @@ static void cartlog_shimwatch2()
 			if (seen[idx >> 3] & bit)
 				continue;   // already emitted this address on an earlier tick
 			seen[idx >> 3] |= bit;
-			if (emitted < 64)
+			if (i <= HI1)
+			{
+				// hole window: uncapped, every unique address matters
 				cartlog("SHIMWATCH2 addr=%08x was=%02x now=%02x\n", 0x8c000000 + i, base[i], mem_b[i]);
-			else if (emitted == 64)
-				cartlog("SHIMWATCH2 CAP\n");
-			emitted++;
+				emitted_hole++;
+			}
+			else
+			{
+				// shim-home window: capped, same 64+CAP discipline as before
+				if (emitted_shim < 64)
+					cartlog("SHIMWATCH2 addr=%08x was=%02x now=%02x\n", 0x8c000000 + i, base[i], mem_b[i]);
+				else if (emitted_shim == 64)
+					cartlog("SHIMWATCH2 CAP\n");
+				emitted_shim++;
+			}
 		}
 	}
+}
+
+// Phase 7 T1 (fix round 2): true once the handoff baseline is captured, by
+// either arming path (Naomi cart DMA/PIO, or the DC-boot CCR trigger in
+// ccn.cpp). Lets a DC-side call site (pvr_regs.cpp) skip its own tick work
+// before there's a baseline to diff against, without exposing
+// cartlog_main_base itself.
+bool cartlog_dc_armed()
+{
+	return cartlog_main_base != nullptr;
 }
 
 // Task 6 state for the deferred TEXERR savestate (see cartlog.h). Plain

@@ -159,6 +159,25 @@ void pvr_WriteReg(u32 paddr,u32 data)
 			// same site, same dynarec-safety argument; prints only on a
 			// new running max.
 			cartlog_arena_tick();
+			// Phase 7 T1 (fix round 2, DC-boot arming): cartlog_shimwatch2()/
+			// cartlog_sp_water() used to run only off cartlog_profiles_tick()'s
+			// ~10s tick, which is gated on the Naomi cart DMA/PIO handoff and
+			// so never fires on a native DC boot. STARTRENDER is the same
+			// dynarec-safe, every-vblank site the two ticks above already use
+			// for the same reason. Guarded on cartlog_dc_armed() (true once
+			// either arming path -- Naomi or the DC-CCR trigger in ccn.cpp --
+			// has captured the handoff baseline); firing from both this tick
+			// and the Naomi-path tick when both are somehow active is
+			// harmless (each dedups/throttles independently).
+			if (cartlog_dc_armed())
+			{
+				static u32 shimticks = 0;
+				if ((shimticks++ % 64) == 0)
+					cartlog_shimwatch2();
+				static u32 spticks = 0;
+				if ((spticks++ % 600) == 0)
+					cartlog_sp_water();
+			}
 			// Phase 5 round-5 (senkosp hw ISTERR bit0 "ISP out of Cache"):
 			// render/TA buffer-register snapshot at the render kick, for the
 			// Naomi-arm vs DC-arm config diff. Buffer regs alternate every
