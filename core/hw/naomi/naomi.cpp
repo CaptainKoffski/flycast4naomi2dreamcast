@@ -471,6 +471,33 @@ void cartlog_shimwatch2()
 			}
 		}
 	}
+
+	// Phase 7 T1 (task-6-brief.md step 5b): third window over the carved
+	// heap top, P1 0x8cff0000-0x8cffffff (mem_b 0x00ff0000-0x00ffffff) --
+	// senkosp's HEAP-CARVE (build_patch_table.py carve()) lowers the
+	// syscall-backend heap top from 0x8d000000 to 0x8cff0000 so isoldr's
+	// resident blob/heap preset above it survives; in an emulator leg
+	// nothing occupies that preset (no isoldr here), so ANY post-carve
+	// write above the carved top means the allocator or the game crossed
+	// it -- a carve failure, not noise. This window sits nowhere near
+	// LO1..HI2 above (a ~16 MB gap), so sharing `seen`'s indexing would
+	// need a ~2 MB bitmap just to cover the skipped middle -- cheaper and
+	// clearer to give it its own small bitmap, uncapped-unique like the
+	// hole window (LO1 above): every unique address matters here too.
+	static u8 seen3[(0x01000000 - 0x00ff0000 + 7) / 8];
+	const u32 LO3 = 0x00ff0000, HI3 = 0x00ffffff;
+	for (u32 i = LO3; i <= HI3; i++)
+	{
+		if (mem_b[i] != base[i])
+		{
+			u32 idx = i - LO3;
+			u8 bit = 1 << (idx & 7);
+			if (seen3[idx >> 3] & bit)
+				continue;
+			seen3[idx >> 3] |= bit;
+			cartlog("SHIMWATCH2 addr=%08x was=%02x now=%02x\n", 0x8c000000 + i, base[i], mem_b[i]);
+		}
+	}
 }
 
 // Phase 7 T1 (fix round 2): true once the handoff baseline is captured, by
