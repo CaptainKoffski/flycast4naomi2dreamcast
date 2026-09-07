@@ -271,6 +271,15 @@ void pvr_WriteReg(u32 paddr,u32 data)
 			PvrReg(addr, u32) = data;
 			CalculateSync();
 		}
+		else
+		{
+			// senkosp T8 video-dropout recon (2026-09-07): change-only logging
+			// hides a mode-set re-run writing identical values -- exactly what a
+			// real monitor may still drop sync on. Census same-value writes too.
+			static u32 same_lines;
+			if (same_lines < 1000)
+				NOTICE_LOG(PVR, "CLEO-SPG same %s = %08x pc=%08x pr=%08x n=%u", regName(paddr), data, p_sh4rcb->cntx.pc, p_sh4rcb->cntx.pr, ++same_lines);
+		}
 		return;
 
 	case FB_R_CTRL_addr:
@@ -278,6 +287,13 @@ void pvr_WriteReg(u32 paddr,u32 data)
 			bool vclk_div_changed = (PvrReg(addr, u32) ^ data) & (1 << 23);
 			if (PvrReg(addr, u32) != data)
 				NOTICE_LOG(PVR, "CLEO-SPG write FB_R_CTRL = %08x (was %08x, vclk_div=%d) pc=%08x pr=%08x", data, PvrReg(addr, u32), (int)((data >> 23) & 1), p_sh4rcb->cntx.pc, p_sh4rcb->cntx.pr);
+			else
+			{
+				// senkosp T8 recon: census same-value writes (see SPG_CONTROL case)
+				static u32 same_lines;
+				if (same_lines < 1000)
+					NOTICE_LOG(PVR, "CLEO-SPG same FB_R_CTRL = %08x pc=%08x pr=%08x n=%u", data, p_sh4rcb->cntx.pc, p_sh4rcb->cntx.pr, ++same_lines);
+			}
 			PvrReg(addr, u32) = data;
 			if (vclk_div_changed)
 				CalculateSync();
@@ -315,6 +331,13 @@ void pvr_WriteReg(u32 paddr,u32 data)
 			PvrReg(addr, u32) = data;
 			fb_dirty = false;
 			check_framebuffer_write();
+		}
+		else
+		{
+			// senkosp T8 recon: census same-value writes (see SPG_CONTROL case)
+			static u32 same_lines;
+			if (same_lines < 1000)
+				NOTICE_LOG(PVR, "CLEO-SPG same FB_R_SIZE = %08x pc=%08x pr=%08x n=%u", data, p_sh4rcb->cntx.pc, p_sh4rcb->cntx.pr, ++same_lines);
 		}
 		return;
 
@@ -463,6 +486,14 @@ void pvr_WriteReg(u32 paddr,u32 data)
 	case VO_STARTY_addr:
 		if (PvrReg(addr, u32) != data)
 			NOTICE_LOG(PVR, "CLEO-SPG write %s = %08x (was %08x) pc=%08x pr=%08x", regName(paddr), data, PvrReg(addr, u32), p_sh4rcb->cntx.pc, p_sh4rcb->cntx.pr);
+		else
+		{
+			// senkosp T8 recon: census same-value writes (see SPG_CONTROL case).
+			// Only VO_CONTROL falls through to here; FB_R_SOF breaks out above.
+			static u32 same_lines;
+			if (same_lines < 1000)
+				NOTICE_LOG(PVR, "CLEO-SPG same %s = %08x pc=%08x pr=%08x n=%u", regName(paddr), data, p_sh4rcb->cntx.pc, p_sh4rcb->cntx.pr, ++same_lines);
+		}
 		break;
 
 	default:
