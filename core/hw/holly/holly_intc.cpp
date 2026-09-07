@@ -106,14 +106,27 @@ template<bool Naomi2>
 static void Write_SB_ISTNRM(u32 addr, u32 data)
 {
 	// senkosp T7 round-3 probe: is a vblank ISR being serviced during the
-	// boot gap (splash side-buffer at 0x260000 on scan)?  Log the first
-	// vblank-in/out acks (ISTNRM bits 3/4) with pc/pr to find the handler.
-	if ((data & 0x18) != 0 && PvrReg(FB_R_SOF1_addr, u32) == 0x00260000)
+	// boot gap (splash side-buffer at 0x260000 on scan)?  Count every
+	// vblank-in/out ack (ISTNRM bits 3/4) inside the window, log a sample,
+	// and print the total once the window closes -- coverage of the whole
+	// gap in one line instead of a capped head (v1's 40-line cap could not
+	// distinguish "ISR runs all gap" from "ISR runs 0.7 s then stops").
+	if ((data & 0x18) != 0)
 	{
 		static int gap_acks;
-		if (gap_acks < 40)
-			cartlog("GAPISR ack=%08x n=%d pc=%08x pr=%08x\n",
-					data, ++gap_acks, p_sh4rcb->cntx.pc, p_sh4rcb->cntx.pr);
+		static bool gap_done;
+		if (PvrReg(FB_R_SOF1_addr, u32) == 0x00260000)
+		{
+			gap_acks++;
+			if (gap_acks <= 4 || gap_acks % 64 == 0)
+				cartlog("GAPISR ack=%08x n=%d pc=%08x pr=%08x\n",
+						data, gap_acks, p_sh4rcb->cntx.pc, p_sh4rcb->cntx.pr);
+		}
+		else if (gap_acks > 0 && !gap_done)
+		{
+			gap_done = true;
+			cartlog("GAPISR-TOTAL n=%d (window closed)\n", gap_acks);
+		}
 	}
 	/* writing a 1 clears the interrupt */
 	if (Naomi2 && (addr & 0x02000000) != 0)
