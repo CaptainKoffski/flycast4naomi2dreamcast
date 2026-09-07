@@ -373,6 +373,28 @@ void pvr_WriteReg(u32 paddr,u32 data)
 						regName(paddr), data, PvrReg(addr, u32), p_sh4rcb->cntx.pc, p_sh4rcb->cntx.pr);
 			}
 		}
+		// senkosp T7 round 2 (2026-09-08): the shim parks scanout on its splash
+		// side-buffer at 32-path 0x260000; dump VRAM at the exact write that
+		// moves R_SOF1 off it (the game's first scene flip) so the scanned
+		// copy's integrity over the whole compose window can be diffed offline.
+		if (addr == FB_R_SOF1_addr && PvrReg(addr, u32) == 0x00260000 && data != 0x00260000)
+		{
+			static const char *vd_prefix2 = getenv("FLYCAST_VRAMDUMP");
+			static bool vd_flip_done;
+			if (vd_prefix2 != nullptr && !vd_flip_done)
+			{
+				vd_flip_done = true;
+				char vd_path[512];
+				snprintf(vd_path, sizeof(vd_path), "%s-flipoff.bin", vd_prefix2);
+				FILE *vd = fopen(vd_path, "wb");
+				if (vd != nullptr)
+				{
+					fwrite(&vram[0], 1, VRAM_SIZE, vd);
+					fclose(vd);
+					NOTICE_LOG(PVR, "CLEO-VRAMDUMP %s (flip off side-buffer) val=%08x pc=%08x pr=%08x", vd_path, data, p_sh4rcb->cntx.pc, p_sh4rcb->cntx.pr);
+				}
+			}
+		}
 		// CLEO-VRAMDUMP: FLYCAST_VRAMDUMP=<prefix> -> raw VRAM snapshot every
 		// 512 SOF writes (~2-4 s), max 40 files. Offline check of CPU FB paints
 		// (loadbar/HUD) that the render path never shows.
