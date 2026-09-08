@@ -4,6 +4,7 @@
 #include "hw/naomi/cartlog.h"
 #include "hw/sh4/sh4_if.h"
 #include "hw/pvr/pvr_regs.h"
+#include "hw/pvr/pvr_mem.h"
 
 /*
 	ASIC Interrupt controller
@@ -121,6 +122,26 @@ static void Write_SB_ISTNRM(u32 addr, u32 data)
 			if (gap_acks <= 4 || gap_acks % 64 == 0)
 				cartlog("GAPISR ack=%08x n=%d pc=%08x pr=%08x\n",
 						data, gap_acks, p_sh4rcb->cntx.pc, p_sh4rcb->cntx.pr);
+			// senkosp T7 round-4: one-shot mid-gap VRAM dump at ack 100.
+			// Vs the flip-off dump (ack ~203) the spinner has advanced
+			// floor((c+203)/8)-floor((c+100)/8) = 12 or 13 steps = 4 or 5
+			// mod 8 -- the active dot MUST differ if it rotates.
+			if (gap_acks == 100)
+			{
+				const char *pfx = getenv("FLYCAST_VRAMDUMP");
+				if (pfx != nullptr)
+				{
+					char path[512];
+					snprintf(path, sizeof(path), "%s-midgap.bin", pfx);
+					FILE *f = fopen(path, "wb");
+					if (f != nullptr)
+					{
+						fwrite(&vram[0], 1, VRAM_SIZE, f);
+						fclose(f);
+						cartlog("GAPISR midgap dump -> %s\n", path);
+					}
+				}
+			}
 		}
 		else if (gap_acks > 0 && !gap_done)
 		{
