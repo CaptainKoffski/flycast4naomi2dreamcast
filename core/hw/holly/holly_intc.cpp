@@ -122,6 +122,11 @@ static void Write_SB_ISTNRM(u32 addr, u32 data)
 			if (gap_acks <= 4 || gap_acks % 64 == 0)
 				cartlog("GAPISR ack=%08x n=%d pc=%08x pr=%08x\n",
 						data, gap_acks, p_sh4rcb->cntx.pc, p_sh4rcb->cntx.pr);
+			// senkosp T7 round-5: sample display-enable state through the gap
+			// (operator: gap black on HW while emulator scans the splash).
+			if (gap_acks % 32 == 1)
+				cartlog("GAPISR state n=%d vo=%08x fbc=%08x\n", gap_acks,
+						PvrReg(VO_CONTROL_addr, u32), PvrReg(FB_R_CTRL_addr, u32));
 			// senkosp T7 round-4: one-shot mid-gap VRAM dump at ack 100.
 			// Vs the flip-off dump (ack ~203) the spinner has advanced
 			// floor((c+203)/8)-floor((c+100)/8) = 12 or 13 steps = 4 or 5

@@ -232,6 +232,15 @@ void pvr_WriteReg(u32 paddr,u32 data)
 		}
 	}
 
+	// senkosp T7 round-5: while the splash side-buffer is on scan (boot gap),
+	// mirror every VO_CONTROL / FB_R_CTRL write into the cartlog (kill-proof;
+	// the NOTICE census lines die in the stdout buffer on pkill -9).
+	if ((addr == VO_CONTROL_addr || addr == FB_R_CTRL_addr)
+			&& PvrReg(FB_R_SOF1_addr, u32) == 0x00260000)
+		cartlog("GAPVO write %s=%08x (was %08x) pc=%08x pr=%08x\n",
+				addr == VO_CONTROL_addr ? "VO_CONTROL" : "FB_R_CTRL",
+				data, PvrReg(addr, u32), p_sh4rcb->cntx.pc, p_sh4rcb->cntx.pr);
+
 	switch (addr)
 	{
 	case ID_addr:
