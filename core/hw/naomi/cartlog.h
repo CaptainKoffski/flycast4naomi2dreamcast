@@ -20,6 +20,12 @@ void cartlog_ringdump(const char *why);      // print buffered slot writes, olde
 // boot-binary.md "SP -- two stacks, not one".
 void cartlog_sp_sample(unsigned sp);   // call at every maple transaction with Sh4cntx.r[15]
 void cartlog_sp_water();               // emit SPWATER; call at the existing ~10s profile tick
+// Phase 7 T15 (senkosp in-match slowdown): emulated frame-rate meter.
+// STARTRENDER kicks counted per 60-vblank window; one FPSTAT line per
+// emulated second. Both counters advance in emulated time, so host speed
+// cancels out -- a dip in rnd per window is the GAME slowing down.
+void cartlog_fpstat_render();          // call on every STARTRENDER write
+void cartlog_fpstat_vblank();          // call once per vblank; emits every 60th
 // Phase 5 Task 5 extension: texture-error classifier-cell sampler (senkosp).
 void cartlog_texerr_tick();            // call on STARTRENDER write; throttles itself to every 64th call
 // Phase 5 Task 6: one-shot RAM snapshot on the TEXERR code=0->nonzero

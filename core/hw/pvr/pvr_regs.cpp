@@ -154,6 +154,8 @@ void pvr_WriteReg(u32 paddr,u32 data)
 		// function throttles itself to every 64th call.
 		if (addr == STARTRENDER_addr)
 		{
+			// Phase 7 T15: frame-rate meter numerator (FPSTAT).
+			cartlog_fpstat_render();
 			cartlog_texerr_tick();
 			// Phase 5 fix-scoping: arena high-water walker (senkosp) --
 			// same site, same dynarec-safety argument; prints only on a

@@ -41,6 +41,25 @@ void cartlog_sp_water()
 	cartlog("SPWATER min=%08x max=%08x bootmin=%08x\n", sp_min, sp_max, sp_boot_min);
 }
 
+// Phase 7 T15: FPSTAT frame-rate meter (see cartlog.h). No cap: 1 line
+// per emulated second.
+static uint32_t fpstat_rnd = 0, fpstat_vbl = 0;
+
+void cartlog_fpstat_render()
+{
+	fpstat_rnd++;
+}
+
+void cartlog_fpstat_vblank()
+{
+	if (!cartlog_enabled())
+		return;
+	if ((++fpstat_vbl % 60) != 0)
+		return;
+	cartlog("FPSTAT vbl=%u rnd=%u\n", fpstat_vbl, fpstat_rnd);
+	fpstat_rnd = 0;
+}
+
 void cartlog(const char *fmt, ...)
 {
 	static FILE *f = nullptr;

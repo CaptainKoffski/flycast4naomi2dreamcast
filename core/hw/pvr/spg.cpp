@@ -165,6 +165,7 @@ static int spg_line_sched(int tag, int cycles, int jitter, void *arg)
 
 			rend_vblank();
 			cartlog_profiles_tick();   // Cleopatra v4: periodic ARAM/VRAM sample (naomi.cpp)
+			cartlog_fpstat_vblank();   // Phase 7 T15: FPSTAT line every 60 vblanks
 
 			u64 now = getTimeMs();
 			cpu_time_idx = (cpu_time_idx + 1) % cpu_cycles.size();
