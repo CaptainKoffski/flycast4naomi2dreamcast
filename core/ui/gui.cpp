@@ -64,6 +64,9 @@ using namespace i18n;
 #include <algorithm>
 #include <csignal>
 #include <cstdlib>
+#include <thread>
+#include "hw/pvr/pvr_regs.h"   /* RAWFB dump: FB_R_SOF1/FB_R_CTRL */
+#include "hw/pvr/pvr_mem.h"    /* RAWFB dump: vram */
 
 bool game_started;
 
@@ -517,6 +520,56 @@ static void getScreenshot(std::vector<u8>& data, int width = 0)
 static volatile std::sig_atomic_t shotForce = 0;
 static void shotSignal(int) { shotForce = 1; }
 
+/* Controls-art A/B (2026-10-02): raw guest-FB dump, $FLYCAST_SHOT_RAWFB=<path.png>.
+ * getScreenshot()->GetLastFrame() only sees TA-rendered presents (the
+ * loadbar-smoke2 finding), so the loader's FB-only frames (splash, pre-game
+ * menu) never land in $FLYCAST_SHOT. This reads the scanout image straight
+ * out of guest VRAM at FB_R_SOF1 on its own watcher thread -- needs neither
+ * the render loop nor macOS capture permission. RGB565 or 0888, 640x480 only
+ * (the loader's fixed mode + the BIOS license screen; anything else is logged and skipped).
+ * Trigger: kill -USR2 <pid>; the file is overwritten per dump. */
+static volatile std::sig_atomic_t rawfbForce = 0;
+static void rawfbSignal(int) { rawfbForce = 1; }
+
+static void rawfbWatcher(const char *path)
+{
+	for (;;)
+	{
+		std::this_thread::sleep_for(std::chrono::milliseconds(100));
+		if (rawfbForce == 0)
+			continue;
+		rawfbForce = 0;
+		const u32 depth = FB_R_CTRL.fb_depth;
+		if (depth != fbde_565 && depth != fbde_C888) {
+			ERROR_LOG(RENDERER, "RAWFB: fb_depth not 565/0888, FB_R_CTRL=%08x", FB_R_CTRL.full);
+			continue;
+		}
+		const u32 sof = FB_R_SOF1;
+		std::vector<u8> rgb(640 * 480 * 3);
+		for (int i = 0; i < 640 * 480; i++) {
+			/* FB scan-out addresses are 32-bit-area: go through the bank
+			 * interleave (pvr_map32), not a linear vram[] read */
+			if (depth == fbde_C888) {
+				/* 0888, 32 bpp (what the BIOS/IP.BIN license screen uses,
+				 * FB_R_CTRL=0x0d): R=23:16 G=15:8 B=7:0, the same unpack as
+				 * TexCache.cpp ReadFramebuffer's fbde_C888 case (tetkiwam iplogo, 2026-10-04) */
+				u32 v = pvr_read32p<u32>(sof + i * 4);
+				rgb[i * 3 + 0] = (u8)(v >> 16);
+				rgb[i * 3 + 1] = (u8)(v >> 8);
+				rgb[i * 3 + 2] = (u8)v;
+				continue;
+			}
+			u16 v = pvr_read32p<u16>(sof + i * 2);
+			rgb[i * 3 + 0] = (u8)((v >> 11) * 255 / 31);
+			rgb[i * 3 + 1] = (u8)(((v >> 5) & 63) * 255 / 63);
+			rgb[i * 3 + 2] = (u8)((v & 31) * 255 / 31);
+		}
+		stbi_flip_vertically_on_write(0);
+		stbi_write_png(path, 640, 480, 3, rgb.data(), 640 * 3);
+		NOTICE_LOG(RENDERER, "RAWFB: dumped %s sof=%08x", path, sof);
+	}
+}
+
 void gui_dumpFramebuffer(u32 frame)
 {
 	static const char *path = nullptr;
@@ -528,6 +581,11 @@ void gui_dumpFramebuffer(u32 frame)
 		const char *e = getenv("FLYCAST_SHOT_EVERY");
 		if (e != nullptr && atoi(e) > 0) every = (u32)atoi(e);
 		if (path != nullptr) std::signal(SIGUSR1, shotSignal);
+		const char *rawfb = getenv("FLYCAST_SHOT_RAWFB");
+		if (rawfb != nullptr) {
+			std::signal(SIGUSR2, rawfbSignal);
+			std::thread(rawfbWatcher, rawfb).detach();
+		}
 	}
 	if (path == nullptr)
 		return;
