@@ -587,6 +587,13 @@ void gui_dumpFramebuffer(u32 frame)
 			std::thread(rawfbWatcher, rawfb).detach();
 		}
 	}
+	// FLYCAST_START_AT=<frame>[,<frame>...]: hold controller-1 Start for frames [N, N+10) (headless input probe)
+	static const char *startAt = getenv("FLYCAST_START_AT");
+	for (const char *p = startAt; p != nullptr; p = strchr(p, ',') ? strchr(p, ',') + 1 : nullptr) {
+		u32 n = (u32)atoi(p);
+		if (frame == n) { kcode[0] &= ~DC_BTN_START; NOTICE_LOG(INPUT, "START_AT: Start down @%u", frame); }
+		else if (frame == n + 10) kcode[0] |= DC_BTN_START;
+	}
 	if (path == nullptr)
 		return;
 	if (shotForce == 0 && (frame % every) != 0)
