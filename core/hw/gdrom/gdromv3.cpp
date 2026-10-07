@@ -733,6 +733,10 @@ static void gd_process_spi_cmd()
 	printf_spi("Sense: %02x %02x %02x", sns_asc, sns_ascq, sns_key);
 
 	printf_spi("SPI command %02x;",packet_cmd.data_8[0]);
+	cartlog("GDSPI %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x sns=%x pc=%08x\n",
+		packet_cmd.data_8[0], packet_cmd.data_8[1], packet_cmd.data_8[2], packet_cmd.data_8[3], packet_cmd.data_8[4], packet_cmd.data_8[5],
+		packet_cmd.data_8[6], packet_cmd.data_8[7], packet_cmd.data_8[8], packet_cmd.data_8[9], packet_cmd.data_8[10], packet_cmd.data_8[11],
+		sns_key, Sh4cntx.pc);
 	printf_spi("Params: %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x",
 		packet_cmd.data_8[0], packet_cmd.data_8[1], packet_cmd.data_8[2], packet_cmd.data_8[3], packet_cmd.data_8[4], packet_cmd.data_8[5],
 		packet_cmd.data_8[6], packet_cmd.data_8[7], packet_cmd.data_8[8], packet_cmd.data_8[9], packet_cmd.data_8[10], packet_cmd.data_8[11] );
@@ -789,6 +793,9 @@ static void gd_process_spi_cmd()
 			read_params.sector_type = sector_type;//yeah i know , not really many types supported...
 
 			printf_spicmd("SPI_CD_READ - Sector=%d Size=%d/%d DMA=%d",read_params.start_sector,read_params.remaining_sectors,read_params.sector_type,Features.CDRead.DMA);
+			cartlog("GDREAD fad=%08x secs=%x expdtype=%d data=%d subh=%d head=%d other=%d prm=%d\n",
+					read_params.start_sector, read_params.remaining_sectors, readcmd.expdtype,
+					readcmd.data, readcmd.subh, readcmd.head, readcmd.other, readcmd.prmtype);
 			if (Features.CDRead.DMA == 1) {
 				pio_buff.clear();
 				gd_set_state(gds_readsector_dma);
@@ -808,6 +815,7 @@ static void gd_process_spi_cmd()
 			
 			//toc - dd/sd
 			libGDR_GetToc(&toc_gd[0], (DiskArea)(packet_cmd.data_8[1] & 1));
+			cartlog("GDTOC area=%d first=%08x t3=%08x\n", packet_cmd.data_8[1] & 1, toc_gd[0], toc_gd[2]);
 			 
 			gd_spi_pio_end((u8*)&toc_gd[0], std::min((u32)packet_cmd.data_8[4] | (packet_cmd.data_8[3] << 8), (u32)sizeof(toc_gd)));
 		}
