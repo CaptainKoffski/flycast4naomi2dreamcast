@@ -2,6 +2,8 @@
 	Dreamcast serial port.
 */
 #include <cerrno>
+#include <cstring>
+#include <vector>
 #include <cstdlib>
 #include <fcntl.h>
 #ifndef _WIN32
@@ -18,6 +20,23 @@
 #include "modules.h"
 #include "hw/sh4/sh4_sched.h"
 #include "serialize.h"
+#include "hw/sh4/sh4_if.h"
+#include "hw/naomi/cartlog.h"
+
+// tetkiwam DreamShell hunt: isoldr bit-bangs the SD card through SCSPTR2 and
+// needs the SCIF transmitter off (SCSCR2.TE=0, SCFCR2.MCE=0). Log every guest
+// write to the control/port/FIFO-control registers and the first TX bytes,
+// with pc (pc-2 = the store under the interpreter). Capped; cartlog only.
+static void scif_wrlog(const char *reg, u32 data)
+{
+	// SCSPTR2/SCFTDR2 are bit-bang/TX noise: capped low. SCSCR2/SCFCR2 are
+	// rare control writes: kept (separate generous cap).
+	static int noisy = 0, ctrl = 0;
+	bool is_noisy = !strcmp(reg, "SCSPTR2") || !strcmp(reg, "SCFTDR2");
+	if (is_noisy ? noisy++ < 300 : ctrl++ < 5000) {
+		cartlog("SCIFWR %s=%04x pc=%08x pr=%08x\n", reg, data, Sh4cntx.pc - 2, Sh4cntx.pr);
+	}
+}
 
 //#define DEBUG_SCIF
 
@@ -137,9 +156,154 @@ void SCIFSerialPort::updateBaudRate()
 	sh4_sched_request(schedId, frameSize * cyclesPerBit);
 }
 
+
+// tetkiwam DreamShell: an SD card on the serial port, as DreamShell's SCIF
+// adapter wires it (dreamshell firmware/isoldr/loader/dev/sd/spi.c:8-16):
+// RTS = /CS, CTS = CLK, TxD = card DIN (MOSI), RxD = card DOUT (MISO), all
+// bit-banged through SCSPTR2. SPI mode 0: isoldr sets MOSI, raises CLK, reads
+// MISO, drops CLK. SDHC (block addressing), read-only. FLYCAST_SDIMG=<raw disk
+// image with an MBR + FAT partition> enables it. TE=1 puts the transmitter on
+// TxD (SH7750 SCSPTR2.SPB2IO note), so MOSI then reads as idle-high: that is
+// the conflict a game's own SCIF use causes on real hardware.
+// ponytail: no writes (CMD24/25 answer "illegal"), no CRC checking.
+namespace sdcard {
+static FILE *img;
+static bool tried;
+static bool cs_low, clk, idle = true, acmd;
+static u8 in, out = 0xff; static int bits;
+static u8 cmd[6]; static int ncmd;
+static std::vector<u8> q; static size_t qpos;
+static bool multi; static u32 next_blk;
+static int log_lines;
+static u32 blocks;
+
+static bool active()
+{
+	if (!tried) {
+		tried = true;
+		if (const char *f = getenv("FLYCAST_SDIMG"))
+			img = fopen(f, "rb");
+		cartlog("SDCARD %s\n", img ? "image opened" : "off");
+	}
+	return img != nullptr;
+}
+static u16 crc16(const u8 *d, int n)
+{
+	u16 c = 0;
+	for (int i = 0; i < n; i++) {
+		c ^= d[i] << 8;
+		for (int b = 0; b < 8; b++) c = c & 0x8000 ? (c << 1) ^ 0x1021 : c << 1;
+	}
+	return c;
+}
+static void push_block(u32 blk)
+{
+	u8 buf[512] = {};
+	blocks++;
+	fseek(img, (long)blk * 512, SEEK_SET);
+	if (fread(buf, 1, 512, img) != 512) memset(buf, 0, 512);
+	u16 c = crc16(buf, 512);
+	q.push_back(0xff); q.push_back(0xfe);
+	q.insert(q.end(), buf, buf + 512);
+	q.push_back(c >> 8); q.push_back(c & 0xff);
+}
+static void push_reg(const u8 *r16)
+{
+	u16 c = crc16(r16, 16);
+	q.push_back(0x00); q.push_back(0xff); q.push_back(0xfe);
+	q.insert(q.end(), r16, r16 + 16);
+	q.push_back(c >> 8); q.push_back(c & 0xff);
+}
+static void command()
+{
+	u8 n = cmd[0] & 0x3f;
+	u32 arg = cmd[1] << 24 | cmd[2] << 16 | cmd[3] << 8 | cmd[4];
+	bool app = acmd; acmd = false;
+	static int reads = 0;
+	if (n == 17 || n == 18) reads++;
+	if (log_lines < 400 && (!(n == 18 || n == 17 || n == 12) || reads <= 3 || reads % 500 == 0)) {
+		log_lines++;
+		cartlog("SDCMD %s%d arg=%08x pc=%08x t=%llu reads=%d blocks=%u\n", app ? "A" : "", n, arg, Sh4cntx.pc - 2,
+				(unsigned long long)sh4_sched_now64(), reads, blocks);
+	}
+	q.clear(); qpos = 0;
+	q.push_back(0xff);                      // NCR
+	u8 r1 = idle ? 0x01 : 0x00;
+	switch (n) {
+	case 0: idle = true; multi = false; q.push_back(0x01); break;
+	case 8: q.insert(q.end(), {0x01, 0x00, 0x00, (u8)(arg >> 8 & 0xf), (u8)arg}); break;
+	case 55: acmd = true; q.push_back(r1); break;
+	case 41: if (app) idle = false; q.push_back(app ? 0x00 : 0x04); break;
+	case 1: idle = false; q.push_back(0x00); break;
+	case 58: q.insert(q.end(), {r1, 0xc0, 0xff, 0x80, 0x00}); break;   // ready, CCS=1
+	case 16: case 59: case 23: q.push_back(r1); break;
+	case 13: q.insert(q.end(), {r1, 0x00}); break;
+	case 9: {                                // CSD v2.0, C_SIZE from the image size
+		fseek(img, 0, SEEK_END);
+		u32 csize = (u32)(ftell(img) / (512 * 1024)) - 1;
+		u8 csd[16] = {0x40, 0x0e, 0x00, 0x32, 0x5b, 0x59, 0x00, (u8)(csize >> 16 & 0x3f),
+				(u8)(csize >> 8), (u8)csize, 0x7f, 0x80, 0x0a, 0x40, 0x00, 0x01};
+		push_reg(csd); break;
+	}
+	case 10: { u8 cid[16] = {0x03, 'F', 'C', 'S', 'D', 'E', 'M', 'U', 0x10, 1, 2, 3, 4, 0x01, 0x1a, 0x01}; push_reg(cid); break; }
+	case 17: q.push_back(0x00); push_block(arg); break;
+	case 18: q.push_back(0x00); multi = true; next_blk = arg; push_block(next_blk++); break;
+	case 12: multi = false; q.insert(q.end(), {0xff, 0x00, 0xff}); break;
+	default: q.push_back(r1 | 0x04); break;
+	}
+}
+static void byte_in(u8 b)
+{
+	if (ncmd == 0 && (b & 0xc0) != 0x40)
+		return;                             // filler / stuff bytes between commands
+	cmd[ncmd++] = b;
+	if (ncmd == 6) { ncmd = 0; command(); }
+}
+static u8 byte_out()
+{
+	if (qpos < q.size()) return q[qpos++];
+	if (multi) { q.clear(); qpos = 0; push_block(next_blk++); return q[qpos++]; }
+	return 0xff;
+}
+// pins: SCSPTR2 value and the transmitter-enable bit
+static void pins(u16 sptr, bool te)
+{
+	if (!active()) return;
+	bool ncs = (sptr & 0x80) ? (sptr & 0x40) != 0 : true;      // RTSIO/RTSDT, undriven = high
+	bool nclk = (sptr & 0x20) ? (sptr & 0x10) != 0 : clk;      // CTSIO/CTSDT, undriven = hold
+	bool mosi = te ? true : ((sptr & 0x02) ? (sptr & 0x01) != 0 : true);
+	if (ncs) {                                // deselected: reset the shifter only
+		if (cs_low) { bits = 0; in = 0; out = 0xff; }
+		cs_low = false; clk = nclk; return;
+	}
+	if (!cs_low) { cs_low = true; bits = 0; in = 0; out = byte_out(); }
+	if (te && log_lines < 400) { log_lines++; cartlog("SDCARD clocked with TE=1 (MOSI held high) pc=%08x\n", Sh4cntx.pc - 2); }
+	if (nclk && !clk)                         // rising edge: sample MOSI
+		in = (in << 1) | mosi;
+	else if (!nclk && clk && ++bits == 8) {   // 8th falling edge: byte done
+		bits = 0; u8 got = in; in = 0;
+		byte_in(got);
+		out = byte_out();
+	}
+	clk = nclk;
+}
+static int miso() { return (out >> (7 - bits)) & 1; }
+// Real SCSPTR2 accesses cross the peripheral bus; Flycast charges ~nothing.
+// FLYCAST_SDCYC=<n> charges n extra SH4 cycles per SCSPTR2 access while the
+// card is attached, to bring SD throughput (and isoldr's IRQ-off windows) to
+// real-console scale. ponytail: flat per-access cost, not a bus model.
+static void bus_cost()
+{
+	static int cyc = -1;
+	if (cyc < 0) { const char *e = getenv("FLYCAST_SDCYC"); cyc = e ? atoi(e) : 0; cartlog("SDCARD bus cost %d cycles/access\n", cyc); }
+	Sh4cntx.cycle_counter -= cyc;
+}
+} // namespace sdcard
+
 // SCIF SCFTDR2 - Transmit FIFO Data Register
 void SCIFSerialPort::SCFTDR2_write(u8 data)
 {
+	scif_wrlog("SCFTDR2", data);
 	SCIF_LOG("serial out %02x %c fifo_sz %d", data, data == '\0' ? ' ' : data, (int)txFifo.size());
 	if (SCIF_SCFCR2.TFRST == 1)
 		return;
@@ -246,7 +410,9 @@ static u16 SCSCR2_read(u32 addr)
 
 void SCIFSerialPort::SCSCR2_write(u16 data)
 {
+	scif_wrlog("SCSCR2", data);
 	SCIF_SCSCR2.full = data & 0x00fa;
+	sdcard::pins(SCIF_SCSPTR2.full, SCIF_SCSCR2.TE);
 	if (SCIF_SCSCR2.TE == 0)
 	{
 		setStatusBit(TEND);
@@ -269,6 +435,10 @@ void SCIFSerialPort::SCSCR2_write(u16 data)
 static u16 SCSPTR2_read(u32 addr)
 {
 	SCIF_LOG("SCIF_SCSPTR2.read %x", SCIF_SCSPTR2.full);
+	if (sdcard::active()) {
+		sdcard::bus_cost();
+		return (SCIF_SCSPTR2.full & ~0x11) | sdcard::miso();
+	}
 	return SCIF_SCSPTR2.full & ~0x10; // CTS active/low
 }
 
@@ -287,7 +457,10 @@ void SCIFSerialPort::setBreak(bool on)
 
 void SCIFSerialPort::SCSPTR2_write(u16 data)
 {
+	scif_wrlog("SCSPTR2", data);
 	SCIF_SCSPTR2.full = data & 0x00f3;
+	if (sdcard::active()) sdcard::bus_cost();
+	sdcard::pins(SCIF_SCSPTR2.full, SCIF_SCSCR2.TE);
 	if (SCIF_SCSPTR2.SPB2IO == 1)
 		setBreak(SCIF_SCSPTR2.SPB2DT == 0 && SCIF_SCSCR2.TE == 0);
 	else
@@ -311,6 +484,7 @@ u16 SCIFSerialPort::SCFCR2_read(u32 addr)
 
 void SCIFSerialPort::SCFCR2_write(u16 data)
 {
+	scif_wrlog("SCFCR2", data);
 	if (SCIF_SCFCR2.TFRST == 1 && !(data & 4))
 	{
 		// when TFRST 1 -> 0

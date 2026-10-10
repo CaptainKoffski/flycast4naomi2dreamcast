@@ -1291,6 +1291,7 @@ static int GDRomschd(int tag, int cycles, int jitter, void *arg)
 
 	u32 src = SB_GDSTARD;
 	u32 len = (SB_GDLEN == 0 ? 0x02000000 : SB_GDLEN) - SB_GDLEND;
+	cartlog("GDDMADST dst=%08x len=%x\n", src, len);   // tetkiwam RAM map: DMA-only buffers
 	
 	if(SB_GDLEN & 0x1F) 
 	{

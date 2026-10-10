@@ -259,6 +259,41 @@ void DYNACALL writet(u32 addr, T data)
 						pa, (int)sz, (u32)data, Sh4cntx.pc - 2, Sh4cntx.pr);
 			}
 		}
+		// tetkiwam DreamShell: isoldr's default placement is 0x8c004000 (sd
+		// loader ~30 KB + heap after it, dreamshell include/isoldr.h:38).
+		// Does GAME code (pc in the 1 MB image at 0x8c010000) store anywhere
+		// in 0x8c004000..0x8c010000? Stack pushes included. Capped.
+		if (pa >= 0x0c004000 && pa < 0x0c010000) {
+			u32 gpc = Sh4cntx.pc - 2;
+			if (gpc >= 0x8c010000 && gpc < 0x8c110000) {
+				// low-water mark only: uncapped, logs each new lowest address
+				// (one static per writet<T> instantiation -- fine for a minimum)
+				static u32 isoldrband_low = 0x0c010000;
+				if (pa < isoldrband_low) {
+					isoldrband_low = pa;
+					cartlog("ISOLDRBANDLOW [%08x] sz=%d val=%08x pc=%08x pr=%08x r15=%08x\n",
+							pa, (int)sz, (u32)data, gpc, Sh4cntx.pr, Sh4cntx.r[15]);
+				}
+			}
+		}
+		// tetkiwam DreamShell: RAM footprint for an isoldr placement. First
+		// CPU store to each 4 KB page of main RAM, any writer, once the game
+		// has run (first store from pc in its image arms it). Interpreter only.
+		if (pa >= 0x0c000000 && pa < 0x0d000000) {
+			static bool pg_armed = false;
+			static u8 pg_seen[4096];
+			u32 ppc = Sh4cntx.pc - 2;
+			if (!pg_armed && ppc >= 0x8c010000 && ppc < 0x8c110000)
+				pg_armed = true;
+			if (pg_armed) {
+				u32 pg = (pa - 0x0c000000) >> 12;
+				if (!pg_seen[pg]) {
+					pg_seen[pg] = 1;
+					cartlog("PAGEFIRST [%08x] pc=%08x pr=%08x r15=%08x\n",
+							pa, ppc, Sh4cntx.pr, Sh4cntx.r[15]);
+				}
+			}
+		}
 		// Round 13: the load->title transition pins on the transfer-queue slot
 		// for the modifier-list closer at 0x0cb80000 whose content is all
 		// zeros (expected [8100xxxx global][EOL]). Watch every CPU store into
