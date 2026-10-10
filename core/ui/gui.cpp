@@ -587,13 +587,24 @@ void gui_dumpFramebuffer(u32 frame)
 			std::thread(rawfbWatcher, rawfb).detach();
 		}
 	}
-	// FLYCAST_START_AT=<frame>[,<frame>...]: hold controller-1 Start for frames [N, N+10) (headless input probe)
+	// FLYCAST_START_AT=<frame>[:<hex mask>][,...]: hold controller-1 Start (or the DC_BTN_*/DC_DPAD_* kcode
+	// mask; 0x10000 = L trigger, 0x20000 = R trigger, fully pressed) for frames [N, N+10) (headless input probe)
 	static const char *startAt = getenv("FLYCAST_START_AT");
 	for (const char *p = startAt; p != nullptr; p = strchr(p, ',') ? strchr(p, ',') + 1 : nullptr) {
 		u32 n = (u32)atoi(p);
-		if (frame == n) { kcode[0] &= ~DC_BTN_START; NOTICE_LOG(INPUT, "START_AT: Start down @%u", frame); }
-		else if (frame == n + 10) kcode[0] |= DC_BTN_START;
+		const char *c = strpbrk(p, ":,");
+		u32 m = c != nullptr && *c == ':' ? (u32)strtoul(c + 1, nullptr, 16) : DC_BTN_START;
+		bool down = frame == n;
+		if (!down && frame != n + 10)
+			continue;
+		if (down) { kcode[0] &= ~(m & 0xffff); NOTICE_LOG(INPUT, "START_AT: mask %x down @%u", m, frame); }
+		else kcode[0] |= m & 0xffff;
+		if (m & 0x10000) lt[0] = down ? 0xffff : 0;
+		if (m & 0x20000) rt[0] = down ? 0xffff : 0;
 	}
+	// FLYCAST_TRIG=<u16>: hold controller-1 L and R triggers at this value every frame (0x8000 -> axis byte 0x80)
+	static const char *trig = getenv("FLYCAST_TRIG");
+	if (trig != nullptr) lt[0] = rt[0] = (u16)strtoul(trig, nullptr, 0);
 	if (path == nullptr)
 		return;
 	if (shotForce == 0 && (frame % every) != 0)
@@ -603,7 +614,10 @@ void gui_dumpFramebuffer(u32 frame)
 	getScreenshot(data);
 	if (data.empty())
 		return;
-	FILE *f = fopen(path, "wb");
+	// a '%u' in FLYCAST_SHOT names each shot by its frame number (frame-locked A/B legs)
+	char named[1024];
+	snprintf(named, sizeof(named), path, frame);
+	FILE *f = fopen(strchr(path, '%') ? named : path, "wb");
 	if (f == nullptr)
 		return;
 	fwrite(data.data(), 1, data.size(), f);

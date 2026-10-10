@@ -310,7 +310,9 @@ struct maple_ascii_stick: maple_sega_controller
 	}
 
 	u32 getAnalogAxis(int index, const PlainJoystickState &pjs) override {
-		return 0x80;
+		// FLYCAST_STICKFILL=<byte>: filler for the undeclared axes (real HKT-7300 value undocumented)
+		static const char *fill = getenv("FLYCAST_STICKFILL");
+		return fill != nullptr ? (u32)strtoul(fill, nullptr, 0) & 0xff : 0x80;
 	}
 
 	const char *get_device_name() override {
