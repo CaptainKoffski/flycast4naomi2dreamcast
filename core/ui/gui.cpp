@@ -45,6 +45,7 @@
 #include "hw/pvr/Renderer_if.h"
 #include "rend/CustomTexture.h"
 #include "hw/mem/addrspace.h"
+#include "hw/sh4/sh4_mem.h"
 #include "hw/maple/maple_if.h"
 #if defined(USE_SDL)
 #include "sdl/sdl.h"
@@ -601,6 +602,27 @@ void gui_dumpFramebuffer(u32 frame)
 		else kcode[0] |= m & 0xffff;
 		if (m & 0x10000) lt[0] = down ? 0xffff : 0;
 		if (m & 0x20000) rt[0] = down ? 0xffff : 0;
+	}
+	// FLYCAST_RAMDUMP=<file> + FLYCAST_RAMDUMP_AT=<frame>: write main RAM (0x0c000000..) at that frame (RAM-diff input probe)
+	static const char *ramDump = getenv("FLYCAST_RAMDUMP");
+	static const char *ramDumpAt = getenv("FLYCAST_RAMDUMP_AT");
+	if (ramDump != nullptr && ramDumpAt != nullptr && frame == (u32)atoi(ramDumpAt))
+		if (FILE *df = fopen(ramDump, "wb")) {
+			fwrite(&mem_b[0], 1, RAM_SIZE, df);
+			fclose(df);
+			NOTICE_LOG(INPUT, "RAMDUMP: %s @%u", ramDump, frame);
+		}
+	// FLYCAST_PEEK=<phys hex>[,<phys hex>...]: log each main-RAM word whenever its value changes, per frame
+	static const char *peek = getenv("FLYCAST_PEEK");
+	static u32 peekLast[8]; static bool peekInit[8];
+	int pi = 0;
+	for (const char *p = peek; p != nullptr && pi < 8; p = strchr(p, ',') ? strchr(p, ',') + 1 : nullptr, pi++) {
+		u32 pa = (u32)strtoul(p, nullptr, 16) & (RAM_SIZE - 1) & ~3u;
+		u32 v = *(u32 *)&mem_b[pa];
+		if (!peekInit[pi] || v != peekLast[pi]) {
+			peekInit[pi] = true; peekLast[pi] = v;
+			NOTICE_LOG(INPUT, "PEEK %08x = %08x @%u", 0x0c000000 | pa, v, frame);
+		}
 	}
 	// FLYCAST_TRIG=<u16>: hold controller-1 L and R triggers at this value every frame (0x8000 -> axis byte 0x80)
 	static const char *trig = getenv("FLYCAST_TRIG");

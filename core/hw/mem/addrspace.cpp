@@ -158,6 +158,30 @@ static inline void cartlog_strwatch(u32 addr)
 	cartlog("STRWATCH pa=%08x pc=%08x pr=%08x\n", pa, pc - 2, Sh4cntx.pr);
 }
 
+// FLYCAST_RDWATCH=<lo>,<hi> (physical, hex): log each distinct (pa, pc, pr) that
+// reads [lo, hi) to the cartlog. Interpreter only (the dynarec reads RAM directly).
+static inline void cartlog_rdwatch(u32 addr, u32 sz)
+{
+	static u32 lo = 1, hi = 0;
+	static bool inited = false;
+	if (!inited) {
+		inited = true;
+		if (const char *w = getenv("FLYCAST_RDWATCH"))
+			if (const char *c = strchr(w, ','))
+				lo = (u32)strtoul(w, nullptr, 16), hi = (u32)strtoul(c + 1, nullptr, 16);
+	}
+	const u32 pa = addr & 0x1fffffff;
+	if (pa < lo || pa >= hi)
+		return;
+	static u32 seen[512][3]; static int nseen = 0;
+	const u32 pc = Sh4cntx.pc - 2, pr = Sh4cntx.pr;
+	for (int i = 0; i < nseen; i++)
+		if (seen[i][0] == pa && seen[i][1] == pc && seen[i][2] == pr) return;
+	if (nseen == 512) return;
+	seen[nseen][0] = pa; seen[nseen][1] = pc; seen[nseen][2] = pr; nseen++;
+	cartlog("RDWATCH pa=%08x sz=%u pc=%08x pr=%08x\n", pa, sz, pc, pr);
+}
+
 template<typename T>
 T DYNACALL readt(u32 addr)
 {
@@ -165,6 +189,7 @@ T DYNACALL readt(u32 addr)
 
 	cartlog_hwaccess('R', addr, 0);
 	cartlog_strwatch(addr);
+	cartlog_rdwatch(addr, sz);
 
 	u32 page = addr >> 24;	//1 op, shift/extract
 	uintptr_t iirf = (uintptr_t)memInfo_ptr[page]; //2 ops, insert + read [vmem table will be on reg ]
