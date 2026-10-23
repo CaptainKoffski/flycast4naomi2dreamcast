@@ -67,6 +67,12 @@ void InitAudio()
 	TermAudio();
 
 	std::string slug = config::AudioBackend;
+	// FLYCAST_HEADLESS=1: no sound device at all (keeps paced timing, doesn't grab headphones)
+	if (getenv("FLYCAST_HEADLESS") != nullptr)
+	{
+		slug = "null";
+		NOTICE_LOG(AUDIO, "HEADLESS: audio backend forced to null");
+	}
 	currentBackend = AudioBackend::getBackend(slug);
 	if (currentBackend == nullptr && slug != "auto")
 	{

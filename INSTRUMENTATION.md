@@ -504,6 +504,13 @@ So the emulator photographs *itself*: `gui_dumpFramebuffer()`
   is the reliable way to capture a *specific* screen; the periodic dump loves
   to sample a transition/black frame.
 - Read with copy-then-open; the write is a single `fwrite` but not atomic.
+- **`FLYCAST_HEADLESS=1`** runs the whole thing out of the way: the SDL window
+  is created hidden (GL still renders offscreen, so `FLYCAST_SHOT`/`_RAWFB`
+  work), the app gets the macOS `Prohibited` activation policy (no Dock icon,
+  never steals focus), and the audio backend is forced to `null` (no sound,
+  no headphone grab; emulation stays real-time paced). The log says
+  `HEADLESS: audio backend forced to null`. Input probes, dumps and the
+  cartlog are unaffected; stop it by PID as usual.
 
 ---
 

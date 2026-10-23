@@ -38,6 +38,10 @@
 #include <cmath>
 #include <cstdlib>
 #include <cstdio>
+#ifdef __APPLE__
+#include <objc/message.h>
+#include <objc/runtime.h>
+#endif
 
 static SDL_Window* window = NULL;
 static u32 windowFlags;
@@ -834,6 +838,9 @@ bool sdl_recreate_window(u32 flags)
 #else
 	flags |= SDL_WINDOW_FULLSCREEN;
 #endif
+	// FLYCAST_HEADLESS=1: never show the window (GL still renders offscreen, so $FLYCAST_SHOT works)
+	if (getenv("FLYCAST_HEADLESS") != nullptr)
+		flags |= SDL_WINDOW_HIDDEN;
 
 	window = SDL_CreateWindow("Flycast", windowPos.x, windowPos.y,
 			windowPos.w * hdpiScaling, windowPos.h * hdpiScaling, flags);
@@ -955,10 +962,23 @@ void sdl_window_create()
 {
 	if (SDL_WasInit(SDL_INIT_VIDEO) == 0)
 	{
+		// FLYCAST_HEADLESS=1: don't let SDL pull the app to the foreground
+		const bool headless = getenv("FLYCAST_HEADLESS") != nullptr;
+		if (headless)
+			SDL_SetHint(SDL_HINT_MAC_BACKGROUND_APP, "1");
 		if (SDL_InitSubSystem(SDL_INIT_VIDEO) != 0)
 		{
 			die("error initializing SDL Video subsystem");
 		}
+#ifdef __APPLE__
+		// ...and never become the active app (no Dock icon, no focus steal): [NSApp setActivationPolicy:NSApplicationActivationPolicyProhibited]
+		if (headless)
+		{
+			// NSApp already exists (SDL's video init created it), so sharedApplication returns it
+			id app = ((id (*)(id, SEL))objc_msgSend)((id)objc_getClass("NSApplication"), sel_registerName("sharedApplication"));
+			((void (*)(id, SEL, long))objc_msgSend)(app, sel_registerName("setActivationPolicy:"), 2);
+		}
+#endif
 #if defined(__APPLE__) && defined(USE_VULKAN)
 		SDL_Vulkan_LoadLibrary("libvulkan.dylib");
 #endif
