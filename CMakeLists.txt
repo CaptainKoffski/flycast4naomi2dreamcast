@@ -1369,6 +1369,9 @@ if(NOT LIBRETRO)
 		else()
 
 			add_subdirectory(core/deps/Syphon)
+			# Syphon's ObjC prefix PCH is PUBLIC upstream; don't let it leak into flycast,
+			# whose .mm sources clash with it ("Objective-C was disabled in PCH")
+			set_property(TARGET Syphon PROPERTY INTERFACE_PRECOMPILE_HEADERS "")
 			target_link_libraries(${PROJECT_NAME} PRIVATE Syphon)
 			add_custom_command(TARGET ${PROJECT_NAME} POST_BUILD
 				COMMAND ${CMAKE_COMMAND} -E copy ${SYPHON_METALLIB}
