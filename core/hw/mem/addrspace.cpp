@@ -182,6 +182,34 @@ static inline void cartlog_rdwatch(u32 addr, u32 sz)
 	cartlog("RDWATCH pa=%08x sz=%u pc=%08x pr=%08x\n", pa, sz, pc, pr);
 }
 
+
+// FLYCAST_WRWATCH=<lo>,<hi> (physical, hex): log each distinct (pa, value, pc, pr) that
+// writes [lo, hi) to the cartlog; FLYCAST_WRWATCH_VAL=<hex> keeps only stores of that
+// value. Interpreter only, like RDWATCH.
+static inline void cartlog_wrwatch(u32 addr, u32 sz, u32 val)
+{
+	static u32 lo = 1, hi = 0, onlyval = 0;
+	static bool inited = false, filt = false;
+	if (!inited) {
+		inited = true;
+		if (const char *w = getenv("FLYCAST_WRWATCH"))
+			if (const char *c = strchr(w, ','))
+				lo = (u32)strtoul(w, nullptr, 16), hi = (u32)strtoul(c + 1, nullptr, 16);
+		if (const char *v = getenv("FLYCAST_WRWATCH_VAL"))	// only log stores of this value
+			filt = true, onlyval = (u32)strtoul(v, nullptr, 16);
+	}
+	const u32 pa = addr & 0x1fffffff;
+	if (pa < lo || pa >= hi || (filt && val != onlyval))
+		return;
+	static u32 seen[512][4]; static int nseen = 0;
+	const u32 pc = Sh4cntx.pc - 2, pr = Sh4cntx.pr;
+	for (int i = 0; i < nseen; i++)
+		if (seen[i][0] == pa && seen[i][1] == val && seen[i][2] == pc && seen[i][3] == pr) return;
+	if (nseen == 512) return;
+	seen[nseen][0] = pa; seen[nseen][1] = val; seen[nseen][2] = pc; seen[nseen][3] = pr; nseen++;
+	cartlog("WRWATCH pa=%08x sz=%u val=%08x pc=%08x pr=%08x\n", pa, sz, val, pc, pr);
+}
+
 template<typename T>
 T DYNACALL readt(u32 addr)
 {
@@ -234,6 +262,8 @@ template<typename T>
 void DYNACALL writet(u32 addr, T data)
 {
 	constexpr u32 sz = sizeof(T);
+
+	cartlog_wrwatch(addr, sz, (u32)data);
 
 	// Phase 4 (Task 13) DC-mode instrumentation: log every guest store into the
 	// G1 register-mirror block (phys 0x0cfc8800-0x0cfc9000; the patched game +

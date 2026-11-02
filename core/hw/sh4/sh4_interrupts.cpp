@@ -201,7 +201,12 @@ void Do_Exception(u32 epc, Sh4ExceptionCode expEvn)
 	assert((expEvn >= Sh4Ex_TlbMissRead && expEvn <= Sh4Ex_SlotIllegalInstr)
 			|| expEvn == Sh4Ex_FpuDisabled || expEvn == Sh4Ex_SlotFpuDisabled || expEvn == Sh4Ex_UserBreak);
 	if (Sh4cntx.sr.BL != 0)
+	{
+		// which exception, where, inside what (spc/ssr = the exception or interrupt being handled)
+		ERROR_LOG(SH4, "BLOCKEDEXC evn=%03x epc=%08x pc=%08x pr=%08x spc=%08x ssr=%08x tea=%08x r15=%08x",
+				expEvn, epc, Sh4cntx.pc, Sh4cntx.pr, Sh4cntx.spc, Sh4cntx.ssr, CCN_TEA, Sh4cntx.r[15]);
 		throw FlycastException("Fatal: SH4 exception when blocked");
+	}
 	CCN_EXPEVT = expEvn;
 
 	Sh4cntx.ssr = Sh4cntx.sr.getFull();
